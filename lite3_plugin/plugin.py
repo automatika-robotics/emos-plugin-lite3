@@ -190,36 +190,158 @@ class Lite3Plugin(RobotPlugin):
             )
         }
 
-        # Named SimpleCMD behaviours, exposed as Action factories.
+        # Named SimpleCMD behaviours, exposed as Action factories. Each carries
+        # a tool description with state-machine guidance so an LLM-driven
+        # monitor (e.g. Cortex) knows when it is safe / valid to invoke the
+        # action. The Lite3 has two orthogonal state axes:
+        #
+        #   - Pose / Move mode  -- POSE_MODE enables trick routines; MOVE_MODE
+        #     enables Twist velocity + gait selectors. The robot ignores
+        #     commands that don't belong to its current mode.
+        #   - Sitting / Standing -- the robot starts sitting (legs folded).
+        #     Trick routines and velocity commands require the robot to be
+        #     standing first (call ``sit_stand`` to bring it up).
         self.actions = ActionRegistry(
             {
-                # one-shot actions (require pose mode)
-                "sit_stand": self._simple_cmd_action(CommandCode.SIT_STAND),
-                "say_hello": self._simple_cmd_action(CommandCode.SAY_HELLO),
-                "twist": self._simple_cmd_action(CommandCode.TWIST),
-                "twist_jump": self._simple_cmd_action(CommandCode.TWIST_JUMP),
-                "moonwalk": self._simple_cmd_action(CommandCode.MOONWALK),
-                "long_jump": self._simple_cmd_action(CommandCode.LONG_JUMP),
-                "stand_zero": self._simple_cmd_action(CommandCode.STAND_ZERO),
-                # mode selection
-                "set_pose_mode": self._simple_cmd_action(CommandCode.MODE_POSE),
-                "set_move_mode": self._simple_cmd_action(CommandCode.MODE_MOVE),
+                # one-shot trick actions -- require POSE_MODE and (for routines
+                # other than sit_stand) require the robot to be standing first
+                "sit_stand": self._simple_cmd_action(
+                    CommandCode.SIT_STAND,
+                    description=(
+                        "Toggle between sitting and standing. The Lite3 starts "
+                        "in a sitting pose with its legs folded; calling this "
+                        "action once brings it up to standing. Calling it "
+                        "again while standing makes it sit back down. Most "
+                        "other trick actions and velocity commands only work "
+                        "while the robot is standing -- invoke this first if "
+                        "the robot is still sitting. Requires POSE_MODE."
+                    ),
+                ),
+                "say_hello": self._simple_cmd_action(
+                    CommandCode.SAY_HELLO,
+                    description=(
+                        "Play the Lite3's greeting routine (waves a front leg "
+                        "in a hello gesture). Requires the robot to be "
+                        "standing and in POSE_MODE."
+                    ),
+                ),
+                "twist": self._simple_cmd_action(
+                    CommandCode.TWIST,
+                    description=(
+                        "Play a body-twist demo routine in place (the robot "
+                        "rotates its torso side-to-side without translating). "
+                        "Requires the robot to be standing and in POSE_MODE."
+                    ),
+                ),
+                "twist_jump": self._simple_cmd_action(
+                    CommandCode.TWIST_JUMP,
+                    description=(
+                        "Play the twisting-jump demo routine in place (the "
+                        "robot hops while rotating). Requires the robot to be "
+                        "standing and in POSE_MODE; leave clearance around it."
+                    ),
+                ),
+                "moonwalk": self._simple_cmd_action(
+                    CommandCode.MOONWALK,
+                    description=(
+                        "Play the moonwalk demo routine (the robot performs a "
+                        "scripted backward gliding gait). Requires the robot "
+                        "to be standing and in POSE_MODE; needs clear floor "
+                        "space behind it."
+                    ),
+                ),
+                "long_jump": self._simple_cmd_action(
+                    CommandCode.LONG_JUMP,
+                    description=(
+                        "Perform a forward long-jump. Requires the robot to "
+                        "be standing and in POSE_MODE; needs clear floor "
+                        "space (a couple of metres) ahead."
+                    ),
+                ),
+                "stand_zero": self._simple_cmd_action(
+                    CommandCode.STAND_ZERO,
+                    description=(
+                        "Return all joints to the zero (calibration) pose "
+                        "while standing. Requires the robot to be standing "
+                        "and in POSE_MODE. Useful as a reset between trick "
+                        "actions."
+                    ),
+                ),
+                # mode selection -- idempotent; safe to call any time
+                "set_pose_mode": self._simple_cmd_action(
+                    CommandCode.MODE_POSE,
+                    description=(
+                        "Switch the robot into POSE_MODE. Required before "
+                        "calling any one-shot trick action (sit_stand, "
+                        "say_hello, twist, twist_jump, moonwalk, long_jump, "
+                        "stand_zero). Idempotent."
+                    ),
+                ),
+                "set_move_mode": self._simple_cmd_action(
+                    CommandCode.MODE_MOVE,
+                    description=(
+                        "Switch the robot into MOVE_MODE. Required before "
+                        "sending Twist velocity commands or selecting a gait. "
+                        "Idempotent."
+                    ),
+                ),
                 "set_manual_mode": self._simple_cmd_action(
-                    CommandCode.CONTROL_MANUAL
+                    CommandCode.CONTROL_MANUAL,
+                    description=(
+                        "Switch the control source to MANUAL (the robot "
+                        "responds to operator/controller velocity commands "
+                        "from this plugin). Idempotent."
+                    ),
                 ),
                 "set_navigation_mode": self._simple_cmd_action(
-                    CommandCode.CONTROL_NAVIGATION
+                    CommandCode.CONTROL_NAVIGATION,
+                    description=(
+                        "Switch the control source to NAVIGATION (the robot "
+                        "follows commands from its onboard "
+                        "navigation/perception host). Idempotent."
+                    ),
                 ),
-                # gaits
-                "gait_slow": self._simple_cmd_action(CommandCode.GAIT_FLAT_SLOW),
+                # gait selectors -- only take effect in MOVE_MODE
+                "gait_slow": self._simple_cmd_action(
+                    CommandCode.GAIT_FLAT_SLOW,
+                    description=(
+                        "Select the slow flat-terrain gait. Only takes "
+                        "effect while in MOVE_MODE and standing."
+                    ),
+                ),
                 "gait_medium": self._simple_cmd_action(
-                    CommandCode.GAIT_FLAT_MEDIUM
+                    CommandCode.GAIT_FLAT_MEDIUM,
+                    description=(
+                        "Select the medium flat-terrain gait. Only takes "
+                        "effect while in MOVE_MODE and standing."
+                    ),
                 ),
-                "gait_fast": self._simple_cmd_action(CommandCode.GAIT_FLAT_FAST),
-                # misc
-                "save_data": self._simple_cmd_action(CommandCode.SAVE_DATA),
+                "gait_fast": self._simple_cmd_action(
+                    CommandCode.GAIT_FLAT_FAST,
+                    description=(
+                        "Select the fast flat-terrain gait. Only takes "
+                        "effect while in MOVE_MODE and standing."
+                    ),
+                ),
+                # misc -- mode-independent
+                "save_data": self._simple_cmd_action(
+                    CommandCode.SAVE_DATA,
+                    description=(
+                        "Save the previous ~100 s of the Lite3's onboard "
+                        "data log to its storage. Works in any mode."
+                    ),
+                ),
                 # KEEP_STEPPING with cmd_value 2 disables stepping == stop
-                "stop": self._simple_cmd_action(CommandCode.KEEP_STEPPING, 2),
+                "stop": self._simple_cmd_action(
+                    CommandCode.KEEP_STEPPING,
+                    2,
+                    description=(
+                        "Halt the robot by disabling the stepping "
+                        "controller. The robot stops moving but remains "
+                        "standing. Safe to call any time; primarily useful "
+                        "while in MOVE_MODE to abort an ongoing motion."
+                    ),
+                ),
             }
         )
 
@@ -240,12 +362,27 @@ class Lite3Plugin(RobotPlugin):
 
     # -- action / event factories -------------------------------------------
     def _simple_cmd_action(
-        self, cmd_code: int, cmd_value: int = 0, type_: int = 0
+        self,
+        cmd_code: int,
+        cmd_value: int = 0,
+        type_: int = 0,
+        *,
+        description: str = "",
     ) -> Callable[[], Action]:
-        """Return a factory that builds an Action sending one ``SimpleCMD``."""
+        """Return a factory that builds an Action sending one ``SimpleCMD``.
+
+        ``description`` is stamped onto the factory as ``_tool_description``
+        so :class:`~ros_sugar.robot.ActionRegistry` surfaces it for LLM-driven
+        consumers (e.g. EmbodiedAgents' Cortex).
+        """
         command = self.transports["command"]
         payload = codecs.encode_simple_cmd(cmd_code, cmd_value, type_)
-        return lambda: Action(method=lambda: command.send(payload))
+        factory: Callable[[], Action] = lambda: Action(
+            method=lambda: command.send(payload)
+        )
+        if description:
+            factory._tool_description = description  # type: ignore[attr-defined]
+        return factory
 
     def _make_low_battery_event(self, threshold: float = 20.0) -> Event:
         """Build an Event that fires when the battery drops below ``threshold``
