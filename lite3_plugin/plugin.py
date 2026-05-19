@@ -152,10 +152,9 @@ class Lite3Plugin(RobotPlugin):
         )
         self.transports = {"command": command, "telemetry": telemetry}
 
-        # RobotState packets fan out into three standard feedback types.
         self.feedbacks = {
             "Odometry": Feedback(
-                name="Odometry",
+                key="Odometry",
                 msg_type=Odometry,
                 transport=telemetry,
                 decoder=_decode_odometry,
@@ -163,7 +162,7 @@ class Lite3Plugin(RobotPlugin):
                 description="Leg odometry decoded from the Lite3 RobotState stream",
             ),
             "Imu": Feedback(
-                name="Imu",
+                key="Imu",
                 msg_type=Lite3Imu,
                 transport=telemetry,
                 decoder=_decode_imu,
@@ -171,7 +170,7 @@ class Lite3Plugin(RobotPlugin):
                 description="Body IMU decoded from the Lite3 RobotState stream",
             ),
             "Float64": Feedback(
-                name="Float64",
+                key="Float64",
                 msg_type=Float64,
                 transport=telemetry,
                 decoder=_decode_battery,
@@ -183,7 +182,7 @@ class Lite3Plugin(RobotPlugin):
         # A standard Twist output becomes the Lite3's three velocity packets.
         self.commands = {
             "Twist": RobotCommand(
-                name="Twist",
+                key="Twist",
                 transport=command,
                 encoder=self._encode_twist,
                 description="Base velocity, sent as three Lite3 ComplexCMD packets",

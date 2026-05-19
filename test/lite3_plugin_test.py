@@ -213,8 +213,8 @@ def test_plugin_introspection():
     """``describe`` reflects the Lite3 plugin's surface."""
     desc = Lite3Plugin().describe()
     assert desc["metadata"]["name"] == "Lite3"
-    assert {f["name"] for f in desc["feedbacks"]} == {"Odometry", "Imu", "Float64"}
-    assert desc["commands"][0]["name"] == "Twist"
+    assert {f["key"] for f in desc["feedbacks"]} == {"Odometry", "Imu", "Float64"}
+    assert desc["commands"][0]["key"] == "Twist"
     assert "sit_stand" in {a["name"] for a in desc["actions"]}
     assert {e["name"] for e in desc["events"]} == {"low_battery"}
 
