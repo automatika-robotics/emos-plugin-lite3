@@ -177,8 +177,9 @@ class Lite3Plugin(RobotPlugin):
                 rate_hz=100.0,
                 description="Body IMU decoded from the Lite3 RobotState stream",
             ),
-            "Float64": Feedback(
-                key="Float64",
+            # Keyed "battery" (a role name) rather than the bare type name.
+            "battery": Feedback(
+                key="battery",
                 msg_type=Float64,
                 transport=telemetry,
                 decoder=_decode_battery,
@@ -394,7 +395,7 @@ class Lite3Plugin(RobotPlugin):
     def _make_low_battery_event(self, threshold: float = 20.0) -> Event:
         """Build an Event that fires when the battery drops below ``threshold``
         percent."""
-        battery = self.feedbacks["Float64"].as_topic()
+        battery = self.feedbacks["battery"].as_topic()
         return Event(event_condition=battery.msg.data < threshold, on_change=True)
 
 

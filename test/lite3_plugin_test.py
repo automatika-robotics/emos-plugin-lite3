@@ -180,7 +180,7 @@ def test_plugin_construction():
     plugin = Lite3Plugin()
     assert plugin.metadata.vendor == "DeepRobotics"
     assert set(plugin.transports) == {"command", "telemetry"}
-    assert set(plugin.feedbacks) == {"Odometry", "Imu", "Float64"}
+    assert set(plugin.feedbacks) == {"Odometry", "Imu", "battery"}
     assert set(plugin.commands) == {"Twist"}
     for action in ("sit_stand", "say_hello", "set_move_mode", "stop", "gait_fast"):
         assert action in plugin.actions
@@ -197,7 +197,7 @@ def test_plugin_spec_roundtrip():
     assert spec["class"].endswith(":Lite3Plugin")
     assert spec["kwargs"] == {}
     rebuilt = RobotPlugin.from_spec(spec)
-    assert set(rebuilt.feedbacks) == {"Odometry", "Imu", "Float64"}
+    assert set(rebuilt.feedbacks) == {"Odometry", "Imu", "battery"}
     assert rebuilt.MOTION_HOST_IP == protocol.DEFAULT_ROBOT_IP
 
     # An override subclass captures its constructor kwargs and applies them
@@ -213,7 +213,7 @@ def test_plugin_introspection():
     """``describe`` reflects the Lite3 plugin's surface."""
     desc = Lite3Plugin().describe()
     assert desc["metadata"]["name"] == "Lite3"
-    assert {f["key"] for f in desc["feedbacks"]} == {"Odometry", "Imu", "Float64"}
+    assert {f["key"] for f in desc["feedbacks"]} == {"Odometry", "Imu", "battery"}
     assert desc["commands"][0]["key"] == "Twist"
     assert "sit_stand" in {a["name"] for a in desc["actions"]}
     assert {e["name"] for e in desc["events"]} == {"low_battery"}
@@ -249,7 +249,7 @@ def test_host_telemetry_decoding(mock_lite3):
             lambda d: imu.append(deserialize_message(d, RosImu)),
         )
         bus.subscribe(
-            "robot/feedback/Float64",
+            "robot/feedback/battery",
             lambda d: battery.append(deserialize_message(d, RosFloat64)),
         )
         deadline = time.time() + 2.0

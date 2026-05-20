@@ -27,10 +27,13 @@ field-for-field. `codecs.py` encodes commands and parses telemetry.
 
 ## What the plugin exposes
 
-- **Feedback** — binds UDP `:43897`, decodes `RobotState` packets into:
-  - `Odometry` — leg odometry (standard `nav_msgs/Odometry`).
-  - `Imu` — body IMU (custom `SupportedType` via `create_supported_type`).
-  - `Float64` — battery percentage.
+- **Feedback** — binds UDP `:43897`, decodes `RobotState` packets into three
+  streams (the registry key a recipe passes to `Topic(use_plugin=...)` is in
+  brackets):
+  - `Odometry` — leg odometry, standard `nav_msgs/Odometry` (key `Odometry`).
+  - `Imu` — body IMU, custom `SupportedType` via `create_supported_type`
+    (key `Imu`).
+  - battery percentage as `std_msgs/Float64` (key `battery`).
 - **Commands** — a standard `Twist` output is encoded to the Lite3's three
   `ComplexCMD` velocity packets (codes 320 / 325 / 321) and sent to UDP `:43893`.
 - **Actions** — named `SimpleCMD` behaviours, exposed as
