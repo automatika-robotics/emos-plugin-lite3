@@ -135,7 +135,15 @@ class Lite3Plugin(RobotPlugin):
             name="Lite3",
             vendor="DeepRobotics",
             version="1.0",
-            description="DeepRobotics Lite3 quadruped (Motion Host UDP interface)",
+            description=(
+                "A DeepRobotics Lite3: a small, agile quadruped (four-legged) "
+                "robot roughly the size of a medium dog. It moves on legs "
+                "rather than wheels, so it walks, turns in place, climbs "
+                "stairs and handles uneven terrain, and can perform dynamic "
+                "manoeuvres such as jumps. It carries an onboard IMU and "
+                "reports leg odometry and battery state. It is used for "
+                "inspection, research and education."
+            ),
         )
         self._vel_x_factor = self.VEL_X_FACTOR
 
