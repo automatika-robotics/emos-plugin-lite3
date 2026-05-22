@@ -141,14 +141,15 @@ tts = TextToSpeech(
 
 The plugin decodes the audio blob and streams it as raw **mono F32LE PCM** over
 UDP to `MOTION_HOST_IP:43899`. Nothing on the wire carries the sample rate, so
-the receiver must be told it — `AUDIO_SAMPLE_RATE` (default `16000`) must match
-the TTS model's output rate and the receiver's caps.
+the receiver must be told it — `AUDIO_SAMPLE_RATE` (default `24000`, the native
+rate of the local sherpa-onnx Kokoro TTS model) must match the TTS model's
+output rate and the receiver's caps.
 
 The Motion Host plays the stream with a gstreamer receiver:
 
 ```bash
 gst-launch-1.0 -v udpsrc port=43899 \
-  caps="audio/x-raw,format=F32LE,channels=1,rate=16000" \
+  caps="audio/x-raw,format=F32LE,channels=1,rate=24000" \
   ! queue ! audioconvert ! audioresample ! autoaudiosink
 ```
 

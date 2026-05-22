@@ -368,6 +368,7 @@ def test_audio_command_streams_over_udp(mock_lite3):
     class _AudioLite3(_Lite3PluginForTest):
         AUDIO_HOST = "127.0.0.1"
         AUDIO_PORT = audio_port
+        AUDIO_SAMPLE_RATE = 16000  # matches the test WAV below
 
     plugin = _AudioLite3(command_port=command_port, telemetry_port=telemetry_port)
     host = RobotPluginHost(plugin, node=None, bus=InProcessFeedbackBus())

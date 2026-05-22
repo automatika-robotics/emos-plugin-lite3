@@ -135,9 +135,10 @@ class Lite3Plugin(RobotPlugin):
     AUDIO_HOST = None
     #: UDP port the Motion Host audio receiver listens on (see README).
     AUDIO_PORT = 43899
-    #: Sample rate the Motion Host receiver expects; set to the TTS model's
-    #: output rate and match it in the receiver's gstreamer caps.
-    AUDIO_SAMPLE_RATE = 16000
+    #: Sample rate the Motion Host receiver expects; match it in the
+    #: receiver's gstreamer caps. Default 24000 Hz -- the native rate of the
+    #: local (sherpa-onnx Kokoro) TTS model; override for other models.
+    AUDIO_SAMPLE_RATE = 24000
     #: Audio frames per UDP packet.
     AUDIO_BLOCK_SIZE = 1024
 
