@@ -140,7 +140,7 @@ tts = TextToSpeech(
 ```
 
 The plugin decodes the audio blob and streams it as raw **mono F32LE PCM** over
-UDP to `MOTION_HOST_IP:43899`. Nothing on the wire carries the sample rate, so
+UDP to `MOTION_HOST_IP:5005`. Nothing on the wire carries the sample rate, so
 the receiver must be told it — `AUDIO_SAMPLE_RATE` (default `24000`, the native
 rate of the local sherpa-onnx Kokoro TTS model) must match the TTS model's
 output rate and the receiver's caps.
@@ -148,15 +148,15 @@ output rate and the receiver's caps.
 The Motion Host plays the stream with a gstreamer receiver:
 
 ```bash
-gst-launch-1.0 -v udpsrc port=43899 \
+gst-launch-1.0 -v udpsrc port=5005 \
   caps="audio/x-raw,format=F32LE,channels=1,rate=24000" \
-  ! queue ! audioconvert ! audioresample ! autoaudiosink
+  ! queue ! audioconvert ! audioresample ! alsasink
 ```
 
-Use `alsasink device=hw:0` instead of `autoaudiosink` to target a specific
-device. There is no documented direct-PCM endpoint on the Lite3, so a receiver
-process (gstreamer, or an equivalent UDP→ALSA player) must run on the host the
-speaker is attached to.
+Add `device=hw:0` to `alsasink` to target a specific ALSA device. Run it as a
+normal user in the `audio` group (not `sudo`). There is no documented
+direct-PCM endpoint on the Lite3, so this receiver process must run on the
+host the speaker is attached to.
 
 Audio class attributes, overridable by subclass: `AUDIO_HOST` (defaults to
 `MOTION_HOST_IP`), `AUDIO_PORT`, `AUDIO_SAMPLE_RATE`, `AUDIO_BLOCK_SIZE`.
