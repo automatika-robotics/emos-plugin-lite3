@@ -51,7 +51,7 @@ def _decode_odometry(raw: bytes) -> Optional[RosOdometry]:
         return None
     msg = RosOdometry()
     msg.header.frame_id = "odom"
-    msg.child_frame_id = "base_link"
+    msg.child_frame_id = "body"
     msg.pose.pose.position.x = state.pos_world[0]
     msg.pose.pose.position.y = state.pos_world[1]
     msg.pose.pose.position.z = state.pos_world[2]
