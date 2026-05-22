@@ -10,7 +10,8 @@ directly, so no separate bridge process is needed.
   decodes ``RobotState`` packets into standard ``Odometry`` and ``Imu`` inputs
   plus a ``Float64`` battery level.
 * **Commands** — a standard ``Twist`` output is encoded to the Lite3's three
-  ``ComplexCMD`` velocity packets and sent to UDP ``:43893``.
+  ``ComplexCMD`` velocity packets and sent to UDP ``:43893``; an ``Audio``
+  output is streamed as raw PCM to the Motion Host speaker.
 * **Actions** — the Lite3's named ``SimpleCMD`` behaviours (sit/stand, hello,
   twist, gaits, mode switches, ...).
 * **Events** — a ``low_battery`` event built from the battery feedback.
@@ -36,6 +37,7 @@ from ros_sugar.robot import (
 )
 from ros_sugar.supported_types import Float64, Odometry
 
+from . import audio as audio_codec
 from . import codecs, protocol
 from .protocol import CommandCode
 from .types import Lite3Imu
@@ -129,6 +131,15 @@ class Lite3Plugin(RobotPlugin):
     #: Send the ``0x21040001`` keep-alive at 4 Hz while active. The Lite3 expects
     #: a heartbeat to retain external control; only disable for offline tests.
     SEND_HEARTBEAT = True
+    #: Host the speaker audio is streamed to. ``None`` -> the Motion Host.
+    AUDIO_HOST = None
+    #: UDP port the Motion Host audio receiver listens on (see README).
+    AUDIO_PORT = 43899
+    #: Sample rate the Motion Host receiver expects; set to the TTS model's
+    #: output rate and match it in the receiver's gstreamer caps.
+    AUDIO_SAMPLE_RATE = 16000
+    #: Audio frames per UDP packet.
+    AUDIO_BLOCK_SIZE = 1024
 
     def __init__(self):
         self.metadata = PluginMetadata(
@@ -158,7 +169,16 @@ class Lite3Plugin(RobotPlugin):
         telemetry = UdpTransport(
             "telemetry", bind=(self.BIND_HOST, self.TELEMETRY_PORT)
         )
-        self.transports = {"command": command, "telemetry": telemetry}
+        # Send-only audio endpoint to the Motion Host speaker.
+        audio = UdpTransport(
+            "audio",
+            send_to=(self.AUDIO_HOST or self.MOTION_HOST_IP, self.AUDIO_PORT),
+        )
+        self.transports = {
+            "command": command,
+            "telemetry": telemetry,
+            "audio": audio,
+        }
 
         self.feedbacks = {
             "Odometry": Feedback(
@@ -188,14 +208,22 @@ class Lite3Plugin(RobotPlugin):
             ),
         }
 
-        # A standard Twist output becomes the Lite3's three velocity packets.
         self.commands = {
+            # A standard Twist output becomes the Lite3's three velocity packets.
             "Twist": RobotCommand(
                 key="Twist",
                 transport=command,
                 encoder=self._encode_twist,
                 description="Base velocity, sent as three Lite3 ComplexCMD packets",
-            )
+            ),
+            # An Audio output (e.g. from a TextToSpeech component) is streamed
+            # as raw PCM to the Motion Host speaker.
+            "Audio": RobotCommand(
+                key="Audio",
+                transport=audio,
+                encoder=self._encode_audio,
+                description="Speech audio, streamed as raw PCM to the Motion Host speaker",
+            ),
         }
 
         # Named SimpleCMD behaviours, exposed as Action factories. Each carries
@@ -361,12 +389,23 @@ class Lite3Plugin(RobotPlugin):
         """Send the Lite3 keep-alive packet."""
         self.transports["command"].send(codecs.encode_heartbeat())
 
-    # -- command encoder -----------------------------------------------------
+    # -- command encoders ----------------------------------------------------
     def _encode_twist(self, output):
         """Encode a component Twist output ``[vx, vy, wz]`` into the Lite3's
         three velocity packets, applying ``vel_x_factor`` to forward speed."""
         vx, vy, wz = float(output[0]), float(output[1]), float(output[2])
         return codecs.encode_velocity(vx * self._vel_x_factor, vy, wz)
+
+    def _encode_audio(self, output):
+        """Decode an Audio output into raw PCM blocks for the Motion Host."""
+        from rclpy.logging import get_logger
+
+        return audio_codec.encode_audio(
+            output,
+            block_size=self.AUDIO_BLOCK_SIZE,
+            expected_rate=self.AUDIO_SAMPLE_RATE,
+            logger=get_logger("lite3_plugin"),
+        )
 
     # -- action / event factories -------------------------------------------
     def _simple_cmd_action(

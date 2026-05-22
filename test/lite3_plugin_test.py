@@ -9,8 +9,11 @@ framework importable::
     python3 -m pytest test/lite3_plugin_test.py -v
 """
 
+import base64
 import ctypes
+import io
 import os
+import socket
 import sys
 import time
 
@@ -179,9 +182,9 @@ def test_plugin_construction():
     """The plugin builds declaratively and exposes the expected surface."""
     plugin = Lite3Plugin()
     assert plugin.metadata.vendor == "DeepRobotics"
-    assert set(plugin.transports) == {"command", "telemetry"}
+    assert set(plugin.transports) == {"command", "telemetry", "audio"}
     assert set(plugin.feedbacks) == {"Odometry", "Imu", "battery"}
-    assert set(plugin.commands) == {"Twist"}
+    assert set(plugin.commands) == {"Twist", "Audio"}
     for action in ("sit_stand", "say_hello", "set_move_mode", "stop", "gait_fast"):
         assert action in plugin.actions
     assert "low_battery" in plugin.events
@@ -214,7 +217,7 @@ def test_plugin_introspection():
     desc = Lite3Plugin().describe()
     assert desc["metadata"]["name"] == "Lite3"
     assert {f["key"] for f in desc["feedbacks"]} == {"Odometry", "Imu", "battery"}
-    assert desc["commands"][0]["key"] == "Twist"
+    assert {c["key"] for c in desc["commands"]} == {"Twist", "Audio"}
     assert "sit_stand" in {a["name"] for a in desc["actions"]}
     assert {e["name"] for e in desc["events"]} == {"low_battery"}
 
@@ -325,6 +328,61 @@ def test_named_action_sends_simple_cmd(mock_lite3):
         assert CommandCode.SIT_STAND in received
     finally:
         host.close()
+
+
+def test_encode_audio_blocks():
+    """``encode_audio`` decodes an audio blob into raw mono F32LE PCM blocks."""
+    sf = pytest.importorskip("soundfile")
+    np = pytest.importorskip("numpy")
+    from lite3_plugin.audio import encode_audio
+
+    rate = 16000
+    samples = np.zeros(rate, dtype="float32")  # 1 s of silence, mono
+    buf = io.BytesIO()
+    sf.write(buf, samples, rate, format="WAV", subtype="FLOAT")
+    wav_bytes = buf.getvalue()
+
+    blocks = encode_audio(wav_bytes, block_size=1024, expected_rate=rate)
+    assert blocks, "no PCM blocks produced"
+    assert len(blocks[0]) == 1024 * 4  # block_size mono float32 frames
+    assert sum(len(b) // 4 for b in blocks) == rate  # all frames accounted for
+    # base64 string input is accepted too
+    assert encode_audio(base64.b64encode(wav_bytes).decode(), expected_rate=rate) == blocks
+
+
+def test_audio_command_streams_over_udp(mock_lite3):
+    """The ``Audio`` command encodes an audio blob and streams raw PCM to the
+    plugin's audio UDP endpoint."""
+    sf = pytest.importorskip("soundfile")
+    np = pytest.importorskip("numpy")
+
+    _robot, command_port, telemetry_port = mock_lite3
+    audio_port = _free_port()
+
+    # A receiver standing in for the Motion Host speaker.
+    rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    rx.bind(("127.0.0.1", audio_port))
+    rx.settimeout(2.0)
+
+    class _AudioLite3(_Lite3PluginForTest):
+        AUDIO_HOST = "127.0.0.1"
+        AUDIO_PORT = audio_port
+
+    plugin = _AudioLite3(command_port=command_port, telemetry_port=telemetry_port)
+    host = RobotPluginHost(plugin, node=None, bus=InProcessFeedbackBus())
+    host.open()
+    try:
+        buf = io.BytesIO()
+        sf.write(buf, np.zeros(2048, dtype="float32"), 16000,
+                 format="WAV", subtype="FLOAT")
+        audio_cmd = plugin.commands["Audio"]
+        plugin.send_command(audio_cmd, audio_cmd.encoder(buf.getvalue()))
+        data, _ = rx.recvfrom(8192)
+        assert len(data) == 1024 * 4  # first raw F32LE mono block
+    finally:
+        host.close()
+        rx.close()
 
 
 def test_heartbeat_is_sent(mock_lite3):

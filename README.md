@@ -34,8 +34,12 @@ field-for-field. `codecs.py` encodes commands and parses telemetry.
   - `Imu` — body IMU, custom `SupportedType` via `create_supported_type`
     (key `Imu`).
   - battery percentage as `std_msgs/Float64` (key `battery`).
-- **Commands** — a standard `Twist` output is encoded to the Lite3's three
-  `ComplexCMD` velocity packets (codes 320 / 325 / 321) and sent to UDP `:43893`.
+- **Commands**
+  - `Twist` — a standard `Twist` output is encoded to the Lite3's three
+    `ComplexCMD` velocity packets (codes 320 / 325 / 321) and sent to UDP `:43893`.
+  - `Audio` — an `Audio` output (e.g. from a TextToSpeech component) is
+    decoded to raw PCM and streamed to the Motion Host speaker over UDP
+    (see [Audio output](#audio-output)).
 - **Actions** — named `SimpleCMD` behaviours, exposed as
   `plugin.actions.<name>()`: `sit_stand`, `say_hello`, `twist`, `twist_jump`,
   `moonwalk`, `long_jump`, `stand_zero`, `set_pose_mode`, `set_move_mode`,
@@ -115,6 +119,46 @@ launcher.bringup()
 
 `FeedbackRepublisher` is the generic base — pass it `FeedbackBridge` entries to
 bridge any plugin's feedbacks.
+
+## Audio output
+
+On the Lite3, EMOS runs on the compute board but the speaker is on the Motion
+Host. The plugin exposes an `Audio` command so a recipe doesn't need to know
+this: give a TextToSpeech (or any `Audio`-output) component's output topic
+`use_plugin=True` and the plugin streams the audio to the Motion Host speaker.
+
+```python
+from agents.components import TextToSpeech
+from agents.ros import Topic
+
+tts = TextToSpeech(
+    inputs=[Topic(name="text_in", msg_type="String")],
+    outputs=[Topic(name="audio", msg_type="Audio", use_plugin=True)],
+    model_client=tts_client,
+    component_name="tts",
+)
+```
+
+The plugin decodes the audio blob and streams it as raw **mono F32LE PCM** over
+UDP to `MOTION_HOST_IP:43899`. Nothing on the wire carries the sample rate, so
+the receiver must be told it — `AUDIO_SAMPLE_RATE` (default `16000`) must match
+the TTS model's output rate and the receiver's caps.
+
+The Motion Host plays the stream with a gstreamer receiver:
+
+```bash
+gst-launch-1.0 -v udpsrc port=43899 \
+  caps="audio/x-raw,format=F32LE,channels=1,rate=16000" \
+  ! queue ! audioconvert ! audioresample ! autoaudiosink
+```
+
+Use `alsasink device=hw:0` instead of `autoaudiosink` to target a specific
+device. There is no documented direct-PCM endpoint on the Lite3, so a receiver
+process (gstreamer, or an equivalent UDP→ALSA player) must run on the host the
+speaker is attached to.
+
+Audio class attributes, overridable by subclass: `AUDIO_HOST` (defaults to
+`MOTION_HOST_IP`), `AUDIO_PORT`, `AUDIO_SAMPLE_RATE`, `AUDIO_BLOCK_SIZE`.
 
 ## Extending
 
