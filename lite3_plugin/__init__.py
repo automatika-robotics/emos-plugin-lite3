@@ -15,5 +15,9 @@ Usage::
 """
 
 from .plugin import Lite3Plugin
+from .republishers import Lite3FeedbackPublisher
 
-__all__ = ["Lite3Plugin"]
+__all__ = [
+    "Lite3Plugin",
+    "Lite3FeedbackPublisher",
+]

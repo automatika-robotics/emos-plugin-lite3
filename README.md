@@ -96,6 +96,26 @@ _Jueying Lite3 Motion Host Communication Interface_ document; see
 `protocol.py::CommandCode`. The `ctypes` struct layout mirrors
 `message_transformer/include/protocol.h`.
 
+## Republishing feedback as ROS2 topics
+
+Feedback decoded from a non-ROS transport lives on Sugarcoat's internal feedback
+bus — components in the same launcher read it via `Topic(use_plugin=...)`, but
+nothing outside the process can. `republishers.py` bridges that gap:
+`Lite3FeedbackPublisher` is a component that republishes the `Odometry` and
+`Imu` feedbacks on real ROS2 topics (`/odom`, `/imu/data`) and broadcasts an
+`odom` → `body` TF. Add it to a launcher like any other component:
+
+```python
+from lite3_plugin import Lite3Plugin, Lite3FeedbackPublisher
+
+launcher = Launcher(robot_plugin=Lite3Plugin())
+launcher.add_pkg(components=[Lite3FeedbackPublisher()])
+launcher.bringup()
+```
+
+`FeedbackRepublisher` is the generic base — pass it `FeedbackBridge` entries to
+bridge any plugin's feedbacks.
+
 ## Extending
 
 The Lite3 also streams `JointState` (code 2306) and `HandleState` (2309)
