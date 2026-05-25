@@ -161,6 +161,42 @@ host the speaker is attached to.
 Audio class attributes, overridable by subclass: `AUDIO_HOST` (defaults to
 `MOTION_HOST_IP`), `AUDIO_PORT`, `AUDIO_SAMPLE_RATE`, `AUDIO_BLOCK_SIZE`.
 
+## kompass robot config
+
+If [kompass](https://github.com/automatika-robotics/kompass) is installed, the
+plugin auto-builds a `RobotConfig` (DIFFERENTIAL_DRIVE, CYLINDER footprint,
+sensible Lite3 velocity/acceleration limits) and exposes it as
+`plugin.robot_config`. Sugarcoat's `Launcher` picks this up at `bringup` and
+broadcasts it to every kompass component on the recipe -- so recipes don't
+need to construct a `RobotConfig` themselves:
+
+```python
+from ros_sugar.launch import Launcher
+from lite3_plugin import Lite3Plugin
+
+launcher = Launcher(robot_plugin=Lite3Plugin())
+launcher.add_pkg(components=[planner, controller, drive_manager], multiprocessing=True)
+# no `launcher.robot = ...` needed -- the plugin provides it
+launcher.bringup()
+```
+
+A recipe can still override with `launcher.robot = my_overridden_config`;
+explicit recipe wins. If kompass isn't installed, `robot_config` is `None`
+and the plugin still works fully -- it just doesn't auto-broadcast.
+
+Override the geometry / limits in a subclass when defaults don't match a
+particular unit:
+
+```python
+class TunedLite3(Lite3Plugin):
+    ROBOT_GEOMETRY_PARAMS = (0.22, 0.38)
+    ROBOT_VX_MAX = 0.6   # safety-capped
+```
+
+Available kompass class attributes: `ROBOT_DRIVE_TYPE`, `ROBOT_GEOMETRY_TYPE`,
+`ROBOT_GEOMETRY_PARAMS`, `ROBOT_VX_MAX` / `ROBOT_VX_ACC` / `ROBOT_VX_DECEL`,
+`ROBOT_OMEGA_MAX` / `ROBOT_OMEGA_ACC` / `ROBOT_OMEGA_DECEL`.
+
 ## Extending
 
 The Lite3 also streams `JointState` (code 2306) and `HandleState` (2309)

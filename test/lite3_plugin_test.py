@@ -185,6 +185,10 @@ def test_plugin_construction():
     assert set(plugin.transports) == {"command", "telemetry", "audio"}
     assert set(plugin.feedbacks) == {"Odometry", "Imu", "battery"}
     assert set(plugin.commands) == {"Twist", "Audio"}
+    # robot_config is a kompass RobotConfig (kompass is a hard dep of this
+    # plugin -- import would have sys.exit'd otherwise).
+    assert plugin.robot_config.model_type == "DIFFERENTIAL_DRIVE"
+    assert plugin.robot_config.geometry_type.value == "CYLINDER"
     for action in ("sit_stand", "say_hello", "set_move_mode", "stop", "gait_fast"):
         assert action in plugin.actions
     assert "low_battery" in plugin.events

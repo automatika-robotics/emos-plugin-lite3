@@ -20,9 +20,26 @@ directly, so no separate bridge process is needed.
 
 from typing import Callable, Optional
 
+import numpy as np
 from nav_msgs.msg import Odometry as RosOdometry
 from sensor_msgs.msg import Imu as RosImu
 from std_msgs.msg import Float64 as RosFloat64
+
+# This plugin provides a kompass ``robot_config``, the rest of it is
+# meant to run inside a kompass based recipe, so kompass is a hard
+# requirement.
+try:
+    from kompass.config import RobotConfig
+    from kompass_core.models import AngularCtrlLimits, LinearCtrlLimits
+except ImportError:
+    import sys
+
+    sys.stderr.write(
+        "[lite3_plugin] 'kompass' (and 'kompass-core') are required because "
+        "this plugin provides a kompass robot_config. See the EMOS install "
+        "guide: https://emos.automatikarobotics.com/getting-started/installation.html\n"
+    )
+    sys.exit(1)
 
 from ros_sugar.core.action import Action
 from ros_sugar.core.event import Event
@@ -143,6 +160,22 @@ class Lite3Plugin(RobotPlugin):
     #: Audio frames per UDP packet.
     AUDIO_BLOCK_SIZE = 1024
 
+    # --- Kompass robot model ---
+    # The Lite3 is a quadruped that accepts a Twist, so for kompass planning
+    # purposes it is modelled as DIFFERENTIAL_DRIVE with a CYLINDER footprint.
+    ROBOT_DRIVE_TYPE = "DIFFERENTIAL_DRIVE"
+    ROBOT_GEOMETRY_TYPE = "CYLINDER"
+    #: ``[radius, height]`` in metres -- the Lite3 is ~75x30x40 cm.
+    ROBOT_GEOMETRY_PARAMS = (0.25, 0.4)
+    #: Forward velocity limits (m/s, m/s^2).
+    ROBOT_VX_MAX = 1.0
+    ROBOT_VX_ACC = 1.5
+    ROBOT_VX_DECEL = 2.5
+    #: Angular velocity limits (rad/s, rad/s^2).
+    ROBOT_OMEGA_MAX = 2.0
+    ROBOT_OMEGA_ACC = 3.0
+    ROBOT_OMEGA_DECEL = 3.0
+
     def __init__(self):
         self.metadata = PluginMetadata(
             name="Lite3",
@@ -159,6 +192,23 @@ class Lite3Plugin(RobotPlugin):
             ),
         )
         self._vel_x_factor = self.VEL_X_FACTOR
+
+        # Define robot config
+        self.robot_config = RobotConfig(
+            model_type=self.ROBOT_DRIVE_TYPE,
+            geometry_type=self.ROBOT_GEOMETRY_TYPE,
+            geometry_params=np.array(self.ROBOT_GEOMETRY_PARAMS),
+            ctrl_vx_limits=LinearCtrlLimits(
+                max_vel=self.ROBOT_VX_MAX,
+                max_acc=self.ROBOT_VX_ACC,
+                max_decel=self.ROBOT_VX_DECEL,
+            ),
+            ctrl_omega_limits=AngularCtrlLimits(
+                max_vel=self.ROBOT_OMEGA_MAX,
+                max_acc=self.ROBOT_OMEGA_ACC,
+                max_decel=self.ROBOT_OMEGA_DECEL,
+            ),
+        )
 
         # Send-only command endpoint, carrying the 4 Hz heartbeat.
         command = UdpTransport(
