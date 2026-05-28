@@ -164,9 +164,9 @@ class Lite3Plugin(RobotPlugin):
     # The Lite3 is a quadruped that accepts a Twist, so for kompass planning
     # purposes it is modelled as DIFFERENTIAL_DRIVE with a CYLINDER footprint.
     ROBOT_DRIVE_TYPE = "DIFFERENTIAL_DRIVE"
-    ROBOT_GEOMETRY_TYPE = "CYLINDER"
-    #: ``[radius, height]`` in metres -- the Lite3 is ~75x30x40 cm.
-    ROBOT_GEOMETRY_PARAMS = (0.25, 0.4)
+    ROBOT_GEOMETRY_TYPE = "BOX"
+    #: ``[length, width, height]`` in metres -- the Lite3 is ~61x37x40 cm.
+    ROBOT_GEOMETRY_PARAMS = (0.61, 0.37, 0.4)
     #: Forward velocity limits (m/s, m/s^2).
     ROBOT_VX_MAX = 1.0
     ROBOT_VX_ACC = 1.5
@@ -175,6 +175,7 @@ class Lite3Plugin(RobotPlugin):
     ROBOT_OMEGA_MAX = 2.0
     ROBOT_OMEGA_ACC = 3.0
     ROBOT_OMEGA_DECEL = 3.0
+    ROBOT_STEER_MAX = np.pi
 
     def __init__(self):
         self.metadata = PluginMetadata(
@@ -186,7 +187,7 @@ class Lite3Plugin(RobotPlugin):
                 "robot roughly the size of a medium dog. It moves on legs "
                 "rather than wheels, so it walks, turns in place, climbs "
                 "stairs and handles uneven terrain, and can perform dynamic "
-                "manoeuvres such as jumps. It carries an onboard IMU and "
+                "maneuvers such as jumps. It carries an onboard IMU and "
                 "reports leg odometry and battery state. It is used for "
                 "inspection, research and education."
             ),
@@ -207,6 +208,7 @@ class Lite3Plugin(RobotPlugin):
                 max_vel=self.ROBOT_OMEGA_MAX,
                 max_acc=self.ROBOT_OMEGA_ACC,
                 max_decel=self.ROBOT_OMEGA_DECEL,
+                max_steer=self.ROBOT_STEER_MAX,
             ),
         )
 
