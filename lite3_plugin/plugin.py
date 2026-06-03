@@ -386,9 +386,9 @@ class Lite3Plugin(RobotPlugin):
                 "set_navigation_mode": self._simple_cmd_action(
                     CommandCode.CONTROL_NAVIGATION,
                     description=(
-                        "Switch the control source to NAVIGATION (the robot "
-                        "follows commands from its onboard "
-                        "navigation/perception host). Idempotent."
+                        "Switch the control source to NAVIGATION mode or AUTONOMOUS mode. The robot can move autonomously"
+                        "by following commands from the onboard "
+                        "navigation system. Idempotent."
                     ),
                 ),
                 # gait selectors -- only take effect in MOVE_MODE
