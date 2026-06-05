@@ -10,7 +10,7 @@ from ros_sugar.core import BaseComponent
 from ros_sugar.core.component import BaseComponentConfig
 from ros_sugar.io.topic import Topic
 
-from .types import Lite3Imu
+from .types import Imu
 
 
 @define(frozen=True)
@@ -203,7 +203,7 @@ class Lite3FeedbackPublisher(FeedbackRepublisher):
                 FeedbackBridge(
                     feedback_key="Imu",
                     out_topic_name=imu_topic_name,
-                    msg_type=Lite3Imu,
+                    msg_type=Imu,
                     qos_profile=qos_profile,
                 ),
             ],

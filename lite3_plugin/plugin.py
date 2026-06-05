@@ -7,14 +7,16 @@ Sugarcoat plugin framework: it speaks the Lite3 Motion Host UDP protocol
 directly, so no separate bridge process is needed.
 
 * **Feedback** — binds UDP ``:43897`` for the robot's telemetry stream and
-  decodes ``RobotState`` packets into standard ``Odometry`` and ``Imu`` inputs
-  plus a ``Float64`` battery level.
+  decodes ``RobotState`` packets into standard ``Odometry`` and ``Imu`` inputs,
+  a ``Float64`` battery level, two ``Range`` ultrasonic distances (front/back),
+  a ``String`` status token, and ``Bool`` balance / fallen flags.
 * **Commands** — a standard ``Twist`` output is encoded to the Lite3's three
   ``ComplexCMD`` velocity packets and sent to UDP ``:43893``; an ``Audio``
   output is streamed as raw PCM to the Motion Host speaker.
 * **Actions** — the Lite3's named ``SimpleCMD`` behaviours (sit/stand, hello,
   twist, gaits, mode switches, ...).
-* **Events** — a ``low_battery`` event built from the battery feedback.
+* **Events** — ``low_battery``, ``obstacle_ahead`` (front ultrasound),
+  ``balance_disturbed`` and ``fallen`` events built from the feedback streams.
 * **Heartbeat** — the ``0x21040001`` keep-alive is sent at 4 Hz while active.
 """
 
@@ -23,7 +25,10 @@ from typing import Callable, Optional
 import numpy as np
 from nav_msgs.msg import Odometry as RosOdometry
 from sensor_msgs.msg import Imu as RosImu
+from sensor_msgs.msg import Range as RosRange
+from std_msgs.msg import Bool as RosBool
 from std_msgs.msg import Float64 as RosFloat64
+from std_msgs.msg import String as RosString
 
 # This plugin provides a kompass ``robot_config``, the rest of it is
 # meant to run inside a kompass based recipe, so kompass is a hard
@@ -52,12 +57,13 @@ from ros_sugar.robot import (
     RobotPlugin,
     UdpTransport,
 )
-from ros_sugar.supported_types import Float64, Odometry
+from ros_sugar.supported_types import Bool, Float64, Odometry, String
 
 from . import audio as audio_codec
 from . import codecs, protocol
 from .protocol import CommandCode
-from .types import Lite3Imu
+from .types import Imu, Range
+
 
 
 # --------------------------------------------------------------------------
@@ -71,17 +77,22 @@ def _decode_odometry(raw: bytes) -> Optional[RosOdometry]:
     msg = RosOdometry()
     msg.header.frame_id = "odom"
     msg.child_frame_id = "body"
+    # pos_world is {x, y, yaw}: the third element is the world-frame heading
+    # in radians, NOT a Z position. The Lite3 walks on the ground plane, so z
+    # stays 0 and the heading goes into the orientation quaternion.
     msg.pose.pose.position.x = state.pos_world[0]
     msg.pose.pose.position.y = state.pos_world[1]
-    msg.pose.pose.position.z = state.pos_world[2]
+    msg.pose.pose.position.z = 0.0
     qx, qy, qz, qw = codecs.quaternion_from_rpy_degrees(0.0, 0.0, state.rpy[2])
     msg.pose.pose.orientation.x = qx
     msg.pose.pose.orientation.y = qy
     msg.pose.pose.orientation.z = qz
     msg.pose.pose.orientation.w = qw
+    # twist is expressed in the child (body) frame, so use the body-frame
+    # velocities: vel_body is {x_vel, y_vel, yaw_vel}.
     msg.twist.twist.linear.x = state.vel_body[0]
     msg.twist.twist.linear.y = state.vel_body[1]
-    msg.twist.twist.angular.z = state.rpy_vel[2]
+    msg.twist.twist.angular.z = state.vel_body[2]
     return msg
 
 
@@ -115,6 +126,78 @@ def _decode_battery(raw: bytes) -> Optional[RosFloat64]:
         return None
     msg = RosFloat64()
     msg.data = float(state.battery_level)
+    return msg
+
+
+def _make_range(distance: float, frame_id: str) -> RosRange:
+    """Build a ``sensor_msgs/Range`` for a Lite3 ultrasonic rangefinder."""
+    msg = RosRange()
+    msg.header.frame_id = frame_id
+    msg.radiation_type = RosRange.ULTRASOUND
+    # The interface doc does not publish a beam width; this is a nominal
+    # estimate for a small ultrasonic cone and is not load-bearing.
+    msg.field_of_view = 0.5
+    msg.min_range = codecs.ULTRASOUND_MIN_RANGE
+    msg.max_range = codecs.ULTRASOUND_MAX_RANGE
+    msg.range = float(distance)
+    return msg
+
+
+def _decode_ultrasound_front(raw: bytes) -> Optional[RosRange]:
+    """Decode the front obstacle distance from a Lite3 ``RobotState`` packet."""
+    state = codecs.parse_robot_state(raw)
+    if state is None:
+        return None
+    return _make_range(state.ultrasound[0], "ultrasound_front")
+
+
+def _decode_ultrasound_back(raw: bytes) -> Optional[RosRange]:
+    """Decode the rear obstacle distance from a Lite3 ``RobotState`` packet."""
+    state = codecs.parse_robot_state(raw)
+    if state is None:
+        return None
+    return _make_range(state.ultrasound[1], "ultrasound_back")
+
+
+def _decode_status(raw: bytes) -> Optional[RosString]:
+    """Decode a human-readable status token from a Lite3 ``RobotState`` packet.
+
+    Combines the basic / gait / motion state fields into one of the tokens in
+    :data:`codecs.BASIC_STATE_NAMES` / ``GAIT_NAMES`` / ``MOTION_STATE_NAMES``
+    (e.g. ``"sitting"``, ``"standing"``, ``"walking_flat_fast"``,
+    ``"long_jump"``, ``"lose_control_protection"``)."""
+    state = codecs.parse_robot_state(raw)
+    if state is None:
+        return None
+    msg = RosString()
+    msg.data = codecs.describe_robot_status(state)
+    return msg
+
+
+def _decode_is_balanced(raw: bytes) -> Optional[RosBool]:
+    """Decode the balance flag from a Lite3 ``RobotState`` packet.
+
+    ``True`` while the robot can hold its balance; ``False`` (from
+    ``is_robot_need_move``) when an external force has disturbed it and it must
+    step to recover."""
+    state = codecs.parse_robot_state(raw)
+    if state is None:
+        return None
+    msg = RosBool()
+    msg.data = not bool(state.is_robot_need_move)
+    return msg
+
+
+def _decode_is_fallen(raw: bytes) -> Optional[RosBool]:
+    """Decode a fallen flag from a Lite3 ``RobotState`` packet.
+
+    ``True`` when ``robot_basic_state`` is a lose-control-protection or
+    flipping-over state (see :data:`codecs.FALLEN_BASIC_STATES`)."""
+    state = codecs.parse_robot_state(raw)
+    if state is None:
+        return None
+    msg = RosBool()
+    msg.data = state.robot_basic_state in codecs.FALLEN_BASIC_STATES
     return msg
 
 
@@ -245,7 +328,7 @@ class Lite3Plugin(RobotPlugin):
             ),
             "Imu": Feedback(
                 key="Imu",
-                msg_type=Lite3Imu,
+                msg_type=Imu,
                 transport=telemetry,
                 decoder=_decode_imu,
                 rate_hz=100.0,
@@ -259,6 +342,56 @@ class Lite3Plugin(RobotPlugin):
                 decoder=_decode_battery,
                 rate_hz=100.0,
                 description="Battery percentage from the Lite3 RobotState stream",
+            ),
+            # Front / back ultrasonic rangefinders (metres, valid 0.28-4.50 m).
+            "ultrasound_front": Feedback(
+                key="ultrasound_front",
+                msg_type=Range,
+                transport=telemetry,
+                decoder=_decode_ultrasound_front,
+                rate_hz=50.0,
+                description="Front obstacle distance from the Lite3 ultrasonic sensor",
+            ),
+            "ultrasound_back": Feedback(
+                key="ultrasound_back",
+                msg_type=Range,
+                transport=telemetry,
+                decoder=_decode_ultrasound_back,
+                rate_hz=50.0,
+                description="Rear obstacle distance from the Lite3 ultrasonic sensor",
+            ),
+            # Human-readable status token (sitting / standing / walking_* /
+            # long_jump / lose_control_protection / ...), for LLM monitors.
+            "robot_status": Feedback(
+                key="robot_status",
+                msg_type=String,
+                transport=telemetry,
+                decoder=_decode_status,
+                rate_hz=50.0,
+                description=(
+                    "Lite3 status token combining basic, gait and motion state "
+                    "(e.g. sitting, standing, walking_flat_fast, long_jump)"
+                ),
+            ),
+            # Balance flag: False when an external force has disturbed the robot
+            # and it must step to recover (from is_robot_need_move).
+            "is_balanced": Feedback(
+                key="is_balanced",
+                msg_type=Bool,
+                transport=telemetry,
+                decoder=_decode_is_balanced,
+                rate_hz=50.0,
+                description="True while the Lite3 can hold its balance",
+            ),
+            # Fallen flag: True in a lose-control-protection or flipping-over
+            # basic state.
+            "is_fallen": Feedback(
+                key="is_fallen",
+                msg_type=Bool,
+                transport=telemetry,
+                decoder=_decode_is_fallen,
+                rate_hz=50.0,
+                description="True when the Lite3 has lost its footing / flipped over",
             ),
         }
 
@@ -436,7 +569,14 @@ class Lite3Plugin(RobotPlugin):
         )
 
         # Pre-built event factories.
-        self.events = EventRegistry({"low_battery": self._make_low_battery_event})
+        self.events = EventRegistry(
+            {
+                "low_battery": self._make_low_battery_event,
+                "obstacle_ahead": self._make_obstacle_ahead_event,
+                "balance_disturbed": self._make_balance_disturbed_event,
+                "fallen": self._make_fallen_event,
+            }
+        )
 
     # -- heartbeat -----------------------------------------------------------
     def _heartbeat(self) -> None:
@@ -490,6 +630,24 @@ class Lite3Plugin(RobotPlugin):
         percent."""
         battery = self.feedbacks["battery"].as_topic()
         return Event(event_condition=battery.msg.data < threshold, on_change=True)
+
+    def _make_obstacle_ahead_event(self, threshold: float = 0.5) -> Event:
+        """Build an Event that fires when the front ultrasonic distance drops
+        below ``threshold`` metres."""
+        front = self.feedbacks["ultrasound_front"].as_topic()
+        return Event(event_condition=front.msg.range < threshold, on_change=True)
+
+    def _make_balance_disturbed_event(self) -> Event:
+        """Build an Event that fires when the robot can no longer hold its
+        balance and must step to recover."""
+        balanced = self.feedbacks["is_balanced"].as_topic()
+        return Event(event_condition=~balanced.msg.data, on_change=True)
+
+    def _make_fallen_event(self) -> Event:
+        """Build an Event that fires when the robot has lost its footing
+        (lose-control-protection or flipping-over state)."""
+        fallen = self.feedbacks["is_fallen"].as_topic()
+        return Event(event_condition=fallen.msg.data == True, on_change=True)  # noqa: E712
 
 
 __all__ = ["Lite3Plugin"]

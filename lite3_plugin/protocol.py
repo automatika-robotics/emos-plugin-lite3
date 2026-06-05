@@ -53,27 +53,33 @@ class ComplexCMD(ctypes.Structure):
 # Telemetry structs (robot -> host)
 # --------------------------------------------------------------------------
 class RobotState(ctypes.Structure):
-    """Robot base state — pose, IMU, velocities, battery, ultrasound."""
+    """Robot base state — pose, IMU, velocities, battery, ultrasound.
+
+    Field order/layout matches the doc's ``RobotStateUpload`` struct exactly.
+    Four fields are documented as **invalid placeholders** (``touch_down_and_
+    stair_trot``, ``is_charging``, ``error_state``, ``task_state``) — they are
+    present only to keep the wire layout right and must not be relied upon.
+    """
 
     _pack_ = 4
     _fields_ = [
-        ("robot_basic_state", ctypes.c_int),
-        ("robot_gait_state", ctypes.c_int),
+        ("robot_basic_state", ctypes.c_int),   # see codecs.BASIC_STATE_NAMES
+        ("robot_gait_state", ctypes.c_int),    # see codecs.GAIT_NAMES
         ("rpy", ctypes.c_double * 3),          # IMU angle (degrees)
-        ("rpy_vel", ctypes.c_double * 3),      # IMU angular velocity
-        ("xyz_acc", ctypes.c_double * 3),      # IMU acceleration
-        ("pos_world", ctypes.c_double * 3),    # position in world frame
-        ("vel_world", ctypes.c_double * 3),    # velocity in world frame
-        ("vel_body", ctypes.c_double * 3),     # velocity in body frame
-        ("touch_down_and_stair_trot", ctypes.c_uint),
-        ("is_charging", ctypes.c_bool),
-        ("error_state", ctypes.c_uint),
-        ("robot_motion_state", ctypes.c_int),
+        ("rpy_vel", ctypes.c_double * 3),      # IMU angular velocity (rad/s)
+        ("xyz_acc", ctypes.c_double * 3),      # IMU acceleration (m/s^2)
+        ("pos_world", ctypes.c_double * 3),    # world frame {x, y, yaw(rad)}
+        ("vel_world", ctypes.c_double * 3),    # world frame {x_vel, y_vel, yaw_vel}
+        ("vel_body", ctypes.c_double * 3),     # body frame {x_vel, y_vel, yaw_vel}
+        ("touch_down_and_stair_trot", ctypes.c_uint),  # INVALID placeholder
+        ("is_charging", ctypes.c_bool),        # INVALID placeholder (not real charge state)
+        ("error_state", ctypes.c_uint),        # INVALID placeholder (not a fault code)
+        ("robot_motion_state", ctypes.c_int),  # see codecs.MOTION_STATE_NAMES
         ("battery_level", ctypes.c_double),    # battery percentage
-        ("task_state", ctypes.c_int),
-        ("is_robot_need_move", ctypes.c_bool),
-        ("zero_position_flag", ctypes.c_bool),
-        ("ultrasound", ctypes.c_double * 2),   # 0: front, 1: back
+        ("task_state", ctypes.c_int),          # INVALID placeholder
+        ("is_robot_need_move", ctypes.c_bool), # 1: lost balance, must step to recover
+        ("zero_position_flag", ctypes.c_bool), # 1: reset-to-zero completed
+        ("ultrasound", ctypes.c_double * 2),   # {front, back} obstacle dist (m), [0.28, 4.50]
     ]
 
 
