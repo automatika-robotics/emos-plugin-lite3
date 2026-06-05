@@ -82,6 +82,74 @@ def parse_handle_state(raw: bytes) -> Optional[protocol.HandleState]:
 
 
 # --------------------------------------------------------------------------
+# Robot-status interpretation (RobotState lookup tables)
+# --------------------------------------------------------------------------
+# Mapping of ``robot_basic_state`` -> short token. From the "Lookup Table for
+# Robot Status" in the Jueying Lite3 Motion Host Communication Interface.
+BASIC_STATE_NAMES = {
+    1: "sitting",
+    4: "preparing",
+    5: "standing_up",
+    6: "standing",  # torque-control (standing) state
+    7: "sitting_down",
+    8: "lose_control_protection",
+    9: "posture_adjustment",
+    11: "flipping_over",
+    17: "resetting_to_zero",
+    18: "backflip",
+    20: "hello",
+}
+
+# Mapping of ``robot_gait_state`` -> short token (only meaningful while moving).
+GAIT_NAMES = {
+    0: "flat_slow",
+    2: "rug_general",
+    4: "flat_medium",
+    5: "flat_fast",
+    6: "rug_grip",
+    12: "moonwalk",
+    13: "rug_h_step",
+}
+
+# Mapping of ``robot_motion_state`` -> the trick the robot is performing. Value
+# 0 means "in the basic state", 1 means "stepping with the current gait"; both
+# defer to the basic-/gait-state tokens above.
+MOTION_STATE_NAMES = {
+    2: "twist",
+    4: "twist_jump",
+    11: "long_jump",
+}
+
+# ``robot_basic_state`` values in which the robot has lost its footing — used to
+# raise a "fallen" event.
+FALLEN_BASIC_STATES = frozenset({8, 11})  # lose-control-protection, flipping-over
+
+# Valid range of the ultrasonic rangefinders, in metres (per the interface doc:
+# values are clamped to this band).
+ULTRASOUND_MIN_RANGE = 0.28
+ULTRASOUND_MAX_RANGE = 4.50
+
+
+def describe_robot_status(state: protocol.RobotState) -> str:
+    """Return a short, stable token describing what the Lite3 is doing now.
+
+    Combines ``robot_basic_state``, ``robot_gait_state`` and
+    ``robot_motion_state`` the way the interface doc's status lookup table does:
+    a one-shot trick (``robot_motion_state`` 2/4/11) takes precedence, then an
+    active gait while stepping, otherwise the bare basic state.
+    """
+    motion = MOTION_STATE_NAMES.get(state.robot_motion_state)
+    if motion is not None:
+        return motion
+    if state.robot_motion_state == 1:  # stepping with the current gait
+        gait = GAIT_NAMES.get(state.robot_gait_state)
+        return f"walking_{gait}" if gait else "walking"
+    return BASIC_STATE_NAMES.get(
+        state.robot_basic_state, f"unknown_{state.robot_basic_state}"
+    )
+
+
+# --------------------------------------------------------------------------
 # Math helper
 # --------------------------------------------------------------------------
 def quaternion_from_rpy_degrees(roll: float, pitch: float, yaw: float):
@@ -107,5 +175,12 @@ __all__ = [
     "parse_robot_state",
     "parse_joint_state",
     "parse_handle_state",
+    "describe_robot_status",
+    "BASIC_STATE_NAMES",
+    "GAIT_NAMES",
+    "MOTION_STATE_NAMES",
+    "FALLEN_BASIC_STATES",
+    "ULTRASOUND_MIN_RANGE",
+    "ULTRASOUND_MAX_RANGE",
     "quaternion_from_rpy_degrees",
 ]
