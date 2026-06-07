@@ -11,7 +11,28 @@ import numpy as np
 from sensor_msgs.msg import Imu as RosImu
 from sensor_msgs.msg import Range as RosRange
 
+from ros_sugar.io.supported_types import _additional_types
 from ros_sugar.robot import create_supported_type
+
+
+def _relocate(supported_type: type) -> type:
+    """Re-stamp a ``create_supported_type`` result so it survives multiprocess
+    launch.
+
+    ``create_supported_type`` builds the class with a bare ``type()`` call from
+    inside ``ros_sugar.robot.types``, so the result inherits that module and is
+    registered under an unimportable key (e.g. ``ros_sugar.robot.types.Imu``).
+    When a component runs in its own process, ``ros_sugar`` serializes that key
+    and the child rebuilds the type with ``getattr(import_module(module), name)``
+    -- which then fails. Re-stamping ``__module__`` to this module (where the
+    type is actually bound) and fixing the registry key makes that round-trip
+    resolve.
+    """
+    stale_key = f"{supported_type.__module__}.{supported_type.__qualname__}"
+    supported_type.__module__ = __name__
+    _additional_types.pop(stale_key, None)
+    _additional_types[f"{__name__}.{supported_type.__qualname__}"] = supported_type
+    return supported_type
 
 
 def _imu_callback(msg: RosImu) -> np.ndarray:
@@ -30,14 +51,12 @@ def _range_callback(msg: RosRange) -> float:
 # Registered SupportedType wrapping sensor_msgs/Imu. The plugin's IMU feedback
 # decoder produces RosImu instances; this type's callback turns them into an
 # array for recipe code.
-Imu = create_supported_type(RosImu, callback=_imu_callback, module="lite3_plugin.types")
+Imu = _relocate(create_supported_type(RosImu, callback=_imu_callback))
 
 # Registered SupportedType wrapping sensor_msgs/Range, used for both the front
 # and back Lite3 ultrasonic rangefinders. The callback exposes the bare
 # distance (metres) to recipe code.
-Range = create_supported_type(
-    RosRange, callback=_range_callback, module="lite3_plugin.types"
-)
+Range = _relocate(create_supported_type(RosRange, callback=_range_callback))
 
 
 __all__ = ["Imu", "Range"]
