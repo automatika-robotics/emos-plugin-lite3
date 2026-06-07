@@ -93,10 +93,13 @@ def test_protocol_struct_sizes_are_distinct():
     """Telemetry packet sizes must differ so length-based dispatch works."""
     sizes = {
         protocol.ROBOT_STATE_SIZE,
+        protocol.ROBOT_STATE_WITH_POLICY_SIZE,
         protocol.JOINT_STATE_SIZE,
         protocol.HANDLE_STATE_SIZE,
     }
-    assert len(sizes) == 3
+    assert len(sizes) == 4
+    # The newer RobotState layout is exactly one extra int (robot_policy_state).
+    assert protocol.ROBOT_STATE_WITH_POLICY_SIZE == protocol.ROBOT_STATE_SIZE + 4
     # Command structs: 3x int32, and that + an 8-byte double.
     assert ctypes.sizeof(protocol.SimpleCMD) == 12
     assert ctypes.sizeof(protocol.ComplexCMD) == 20
@@ -164,6 +167,52 @@ def test_parse_robot_state_rejects_other_packets():
     assert codecs.parse_robot_state(bytes(frame)) is None
 
 
+def test_parse_robot_state_accepts_newer_layout():
+    """parse_robot_state auto-detects the 4-byte-larger RobotStateWithPolicy frame
+    (newer Lite3_ROS firmware) without breaking the default layout."""
+    frame = protocol.RobotStateReceivedWithPolicy()
+    frame.code = protocol.ROBOT_STATE_CODE
+    frame.data.battery_level = 73.0
+    frame.data.robot_policy_state = 5
+    raw = bytes(frame)
+    assert len(raw) == protocol.ROBOT_STATE_WITH_POLICY_SIZE
+    state = codecs.parse_robot_state(raw)
+    assert state is not None
+    assert state.battery_level == 73.0
+    # The extra field is exposed on the with-policy payload.
+    assert state.robot_policy_state == 5
+
+
+def test_parse_joint_state_roundtrip():
+    """parse_joint_state decodes the 12 leg-joint angles in JOINT_NAMES order."""
+    frame = protocol.JointStateReceived()
+    frame.code = protocol.JOINT_STATE_CODE
+    values = [0.1 * i for i in range(12)]
+    for name, value in zip(codecs.JOINT_NAMES, values):
+        setattr(frame.data, name, value)
+    state = codecs.parse_joint_state(bytes(frame))
+    assert state is not None
+    assert [getattr(state, name) for name in codecs.JOINT_NAMES] == values
+    # JOINT_NAMES is exactly the struct's field order.
+    assert list(codecs.JOINT_NAMES) == [f[0] for f in protocol.JointState._fields_]
+    # Wrong-sized / wrong-code packets are rejected.
+    assert codecs.parse_joint_state(codecs.encode_simple_cmd(1)) is None
+
+
+def test_parse_handle_state_roundtrip():
+    """parse_handle_state decodes the operator joystick frame."""
+    frame = protocol.HandleStateReceived()
+    frame.code = protocol.HANDLE_STATE_CODE
+    frame.data.left_axis_forward = 0.5
+    frame.data.left_axis_side = -0.25
+    frame.data.right_axis_yaw = 0.75
+    state = codecs.parse_handle_state(bytes(frame))
+    assert state is not None
+    assert state.left_axis_forward == 0.5
+    assert state.left_axis_side == -0.25
+    assert state.right_axis_yaw == 0.75
+
+
 def test_quaternion_from_rpy():
     """Zero RPY is the identity quaternion; 180 deg yaw flips z."""
     assert codecs.quaternion_from_rpy_degrees(0, 0, 0) == pytest.approx(
@@ -178,20 +227,37 @@ def test_quaternion_from_rpy():
 # ---------------------------------------------------------------------------
 # Plugin construction & introspection
 # ---------------------------------------------------------------------------
+# The full feedback / event surface the plugin exposes.
+_EXPECTED_FEEDBACKS = {
+    "Odometry",
+    "Imu",
+    "battery",
+    "ultrasound_front",
+    "ultrasound_back",
+    "robot_status",
+    "is_balanced",
+    "is_fallen",
+    "JointState",
+    "handle",
+}
+_EXPECTED_EVENTS = {"low_battery", "obstacle_ahead", "balance_disturbed", "fallen"}
+
+
 def test_plugin_construction():
     """The plugin builds declaratively and exposes the expected surface."""
     plugin = Lite3Plugin()
     assert plugin.metadata.vendor == "DeepRobotics"
     assert set(plugin.transports) == {"command", "telemetry", "audio"}
-    assert set(plugin.feedbacks) == {"Odometry", "Imu", "battery"}
+    assert set(plugin.feedbacks) == _EXPECTED_FEEDBACKS
     assert set(plugin.commands) == {"Twist", "Audio"}
     # robot_config is a kompass RobotConfig (kompass is a hard dep of this
     # plugin -- import would have sys.exit'd otherwise).
     assert plugin.robot_config.model_type == "DIFFERENTIAL_DRIVE"
-    assert plugin.robot_config.geometry_type.value == "CYLINDER"
+    assert plugin.robot_config.geometry_type.value == "BOX"
     for action in ("sit_stand", "say_hello", "set_move_mode", "stop", "gait_fast"):
         assert action in plugin.actions
-    assert "low_battery" in plugin.events
+    for event in _EXPECTED_EVENTS:
+        assert event in plugin.events
     # The command transport carries the 4 Hz heartbeat
     assert plugin.transports["command"].keep_alive_rate_hz == 4.0
 
@@ -204,7 +270,7 @@ def test_plugin_spec_roundtrip():
     assert spec["class"].endswith(":Lite3Plugin")
     assert spec["kwargs"] == {}
     rebuilt = RobotPlugin.from_spec(spec)
-    assert set(rebuilt.feedbacks) == {"Odometry", "Imu", "battery"}
+    assert set(rebuilt.feedbacks) == _EXPECTED_FEEDBACKS
     assert rebuilt.MOTION_HOST_IP == protocol.DEFAULT_ROBOT_IP
 
     # An override subclass captures its constructor kwargs and applies them
@@ -220,10 +286,10 @@ def test_plugin_introspection():
     """``describe`` reflects the Lite3 plugin's surface."""
     desc = Lite3Plugin().describe()
     assert desc["metadata"]["name"] == "Lite3"
-    assert {f["key"] for f in desc["feedbacks"]} == {"Odometry", "Imu", "battery"}
+    assert {f["key"] for f in desc["feedbacks"]} == _EXPECTED_FEEDBACKS
     assert {c["key"] for c in desc["commands"]} == {"Twist", "Audio"}
     assert "sit_stand" in {a["name"] for a in desc["actions"]}
-    assert {e["name"] for e in desc["events"]} == {"low_battery"}
+    assert {e["name"] for e in desc["events"]} == _EXPECTED_EVENTS
 
 
 # ---------------------------------------------------------------------------
