@@ -1,18 +1,11 @@
 # Lite3 Robot Plugin for EMOS
 
 A [Sugarcoat](https://automatika-robotics.github.io/sugarcoat/)-ed robot plugin
-for the **DeepRobotics Lite3** quadruped — a class-based conversion of
-DeepRobotics' `message_transformer` ROS2 package that formally integrates the
-Lite3 with [EMOS](https://automatikarobotics.com/emos/).
-
-## What this replaces
-
-DeepRobotics' `message_transformer` ships two C++ bridge nodes (`qnx2ros`,
-`ros2qnx`) that translate between the Lite3's **Motion Host UDP protocol** and
-ROS topics. This plugin folds that translation into the Sugarcoat plugin
-framework: it speaks the UDP protocol _directly_, so no separate bridge process
-is required — an EMOS recipe using `Lite3Plugin` talks to the robot on its
-own.
+for the **DeepRobotics Lite3** quadruped that integrates the Lite3 with
+[EMOS](https://automatikarobotics.com/emos/). It speaks the Lite3's **Motion
+Host UDP protocol** directly from inside the Sugarcoat plugin framework, so no
+separate bridge process is required — an EMOS recipe using `Lite3Plugin` talks
+to the robot on its own.
 
 ## The Lite3 control surface
 
@@ -21,19 +14,39 @@ own.
 | Commands  | UDP → robot `:43893` | `SimpleCMD` (3×int32) / `ComplexCMD` (3×int32 + double)                                     |
 | Telemetry | UDP ← bind `:43897`  | `RobotStateReceived` (code 2305), `JointStateReceived` (2306), `HandleStateReceived` (2309) |
 
-`protocol.py` mirrors the DeepRobotics C structs with `ctypes` (`_pack_ = 4`),
-so the on-the-wire layout matches `message_transformer/include/protocol.h`
-field-for-field. `codecs.py` encodes commands and parses telemetry.
+`protocol.py` defines the wire layout with `ctypes` (`_pack_ = 4`), so the
+on-the-wire bytes match the Lite3 Motion Host structs field-for-field and packet
+sizes can be used for type dispatch. `codecs.py` encodes commands and parses
+telemetry.
+
+## Installation
+
+See the
+[EMOS install guide](https://emos.automatikarobotics.com/getting-started/installation.html).
 
 ## What the plugin exposes
 
-- **Feedback** — binds UDP `:43897`, decodes `RobotState` packets into three
+- **Feedback** — binds UDP `:43897` and decodes the robot's telemetry into ten
   streams (the registry key a recipe passes to `Topic(use_plugin=...)` is in
-  brackets):
-  - `Odometry` — leg odometry, standard `nav_msgs/Odometry` (key `Odometry`).
-  - `Imu` — body IMU, custom `SupportedType` via `create_supported_type`
+  brackets). From the `RobotState` packet:
+  - leg odometry, standard `nav_msgs/Odometry` (key `Odometry`).
+  - body IMU, custom `SupportedType` via `create_supported_type`
     (key `Imu`).
-  - battery percentage as `std_msgs/Float64` (key `battery`).
+  - battery percentage, `std_msgs/Float64` (key `battery`).
+  - front / back ultrasonic distance, custom `Range` `SupportedType`
+    (keys `ultrasound_front`, `ultrasound_back`).
+  - human-readable status token (`sitting`, `standing`, `walking_flat_fast`,
+    `long_jump`, ...), `std_msgs/String` (key `robot_status`).
+  - balance flag — `True` while the robot can hold its balance, `False` when
+    an external force has disturbed it, `std_msgs/Bool` (key `is_balanced`).
+  - fallen flag — `True` in a lose-control-protection or flipping-over state,
+    `std_msgs/Bool` (key `is_fallen`).
+
+  From the `JointState` and `HandleState` packets:
+  - the 12 leg-joint angles, custom `JointState` wrapping `sensor_msgs/JointState` (key `JointState`).
+  - the operator joystick command as a `geometry_msgs/Twist` (left stick →
+    linear x/y, right stick → yaw), built-in `Twist` (key `handle`).
+
 - **Commands**
   - `Twist` — a standard `Twist` output is encoded to the Lite3's three
     `ComplexCMD` velocity packets (codes 320 / 325 / 321) and sent to UDP `:43893`.
@@ -44,8 +57,17 @@ field-for-field. `codecs.py` encodes commands and parses telemetry.
   `plugin.actions.<name>()`: `sit_stand`, `say_hello`, `twist`, `twist_jump`,
   `moonwalk`, `long_jump`, `stand_zero`, `set_pose_mode`, `set_move_mode`,
   `set_manual_mode`, `set_navigation_mode`, `gait_slow` / `gait_medium` /
-  `gait_fast`, `save_data`, `stop`.
-- **Events** — `plugin.events.low_battery(threshold=20.0)`.
+  `gait_fast`, `save_data`, `stop`. Each carries a tool description with
+  state-machine guidance, so an LLM-driven monitor knows when an action is
+  valid to invoke.
+- **Events**, exposed as `plugin.events.<name>(...)`:
+  - `low_battery(threshold=20.0)` — battery drops below `threshold` percent.
+  - `obstacle_ahead(threshold=0.5)` — front ultrasonic distance drops below
+    `threshold` metres.
+  - `balance_disturbed()` — the robot can no longer hold its balance and must
+    step to recover.
+  - `fallen()` — the robot has lost its footing (lose-control-protection or
+    flipping-over state).
 - **Heartbeat** — the `0x21040001` keep-alive is sent at 4 Hz while the plugin
   is active, so the robot retains external control.
 
@@ -90,15 +112,14 @@ class MyLite3(Lite3Plugin):
 plugin = MyLite3()
 ```
 
-Available class attributes: `MOTION_HOST_IP`, `COMMAND_PORT`, `TELEMETRY_PORT`,
-`BIND_HOST`, `VEL_X_FACTOR`, `SEND_HEARTBEAT`.
+Available network class attributes: `MOTION_HOST_IP`, `COMMAND_PORT`,
+`TELEMETRY_PORT`, `BIND_HOST`, `VEL_X_FACTOR`, `SEND_HEARTBEAT`.
 
 ## Command codes
 
-Codes are taken from the DeepRobotics `message_transformer` README and the
-_Jueying Lite3 Motion Host Communication Interface_ document; see
-`protocol.py::CommandCode`. The `ctypes` struct layout mirrors
-`message_transformer/include/protocol.h`.
+Codes follow the _Jueying Lite3 Motion Host Communication Interface_ document;
+see `protocol.py::CommandCode`. Velocity is sent as three `ComplexCMD` packets
+(the small numeric codes); every other command is a `SimpleCMD`.
 
 ## Republishing feedback as ROS2 topics
 
@@ -163,12 +184,11 @@ Audio class attributes, overridable by subclass: `AUDIO_HOST` (defaults to
 
 ## kompass robot config
 
-If [kompass](https://github.com/automatika-robotics/kompass) is installed, the
-plugin auto-builds a `RobotConfig` (DIFFERENTIAL_DRIVE, CYLINDER footprint,
-sensible Lite3 velocity/acceleration limits) and exposes it as
-`plugin.robot_config`. Sugarcoat's `Launcher` picks this up at `bringup` and
-broadcasts it to every kompass component on the recipe -- so recipes don't
-need to construct a `RobotConfig` themselves:
+The plugin auto-builds a `RobotConfig` (DIFFERENTIAL_DRIVE drive model, BOX
+footprint of ~61×37×40 cm, sensible Lite3 velocity/acceleration limits) and
+exposes it as `plugin.robot_config`. Sugarcoat's `Launcher` picks this up at
+`bringup` and broadcasts it to every kompass component on the recipe -- so
+recipes don't need to construct a `RobotConfig` themselves:
 
 ```python
 from ros_sugar.launch import Launcher
@@ -181,26 +201,17 @@ launcher.bringup()
 ```
 
 A recipe can still override with `launcher.robot = my_overridden_config`;
-explicit recipe wins. If kompass isn't installed, `robot_config` is `None`
-and the plugin still works fully -- it just doesn't auto-broadcast.
+explicit recipe wins.
 
 Override the geometry / limits in a subclass when defaults don't match a
 particular unit:
 
 ```python
 class TunedLite3(Lite3Plugin):
-    ROBOT_GEOMETRY_PARAMS = (0.22, 0.38)
+    ROBOT_GEOMETRY_PARAMS = (0.61, 0.37, 0.4)   # [length, width, height] in metres
     ROBOT_VX_MAX = 0.6   # safety-capped
 ```
 
 Available kompass class attributes: `ROBOT_DRIVE_TYPE`, `ROBOT_GEOMETRY_TYPE`,
 `ROBOT_GEOMETRY_PARAMS`, `ROBOT_VX_MAX` / `ROBOT_VX_ACC` / `ROBOT_VX_DECEL`,
-`ROBOT_OMEGA_MAX` / `ROBOT_OMEGA_ACC` / `ROBOT_OMEGA_DECEL`.
-
-## Extending
-
-The Lite3 also streams `JointState` (code 2306) and `HandleState` (2309)
-packets — `codecs.parse_joint_state` / `codecs.parse_handle_state` already
-decode them. Add `Feedback` entries (e.g. a `create_supported_type`-wrapped
-`JointState`, or `HandleState` as a `Twist`) to expose them, following the IMU
-feedback as a template.
+`ROBOT_OMEGA_MAX` / `ROBOT_OMEGA_ACC` / `ROBOT_OMEGA_DECEL`, `ROBOT_STEER_MAX`.
