@@ -9,7 +9,9 @@ directly, so no separate bridge process is needed.
 * **Feedback** — binds UDP ``:43897`` for the robot's telemetry stream and
   decodes ``RobotState`` packets into standard ``Odometry`` and ``Imu`` inputs,
   a ``Float64`` battery level, two ``Range`` ultrasonic distances (front/back),
-  a ``String`` status token, and ``Bool`` balance / fallen flags.
+  a ``String`` status token, and ``Bool`` balance / fallen flags; it also
+  decodes the ``JointState`` (12 leg-joint angles) and ``HandleState``
+  (operator joystick, as a ``Twist``) streams.
 * **Commands** — a standard ``Twist`` output is encoded to the Lite3's three
   ``ComplexCMD`` velocity packets and sent to UDP ``:43893``; an ``Audio``
   output is streamed as raw PCM to the Motion Host speaker.
@@ -23,8 +25,10 @@ directly, so no separate bridge process is needed.
 from typing import Callable, Optional
 
 import numpy as np
+from geometry_msgs.msg import Twist as RosTwist
 from nav_msgs.msg import Odometry as RosOdometry
 from sensor_msgs.msg import Imu as RosImu
+from sensor_msgs.msg import JointState as RosJointState
 from sensor_msgs.msg import Range as RosRange
 from std_msgs.msg import Bool as RosBool
 from std_msgs.msg import Float64 as RosFloat64
@@ -57,12 +61,12 @@ from ros_sugar.robot import (
     RobotPlugin,
     UdpTransport,
 )
-from ros_sugar.supported_types import Bool, Float64, Odometry, String
+from ros_sugar.supported_types import Bool, Float64, Odometry, String, Twist
 
 from . import audio as audio_codec
 from . import codecs, protocol
 from .protocol import CommandCode
-from .types import Imu, Range
+from .types import Imu, JointState, Range
 
 
 
@@ -198,6 +202,38 @@ def _decode_is_fallen(raw: bytes) -> Optional[RosBool]:
         return None
     msg = RosBool()
     msg.data = state.robot_basic_state in codecs.FALLEN_BASIC_STATES
+    return msg
+
+
+def _decode_joint_state(raw: bytes) -> Optional[RosJointState]:
+    """Decode a Lite3 ``JointState`` packet into ``sensor_msgs/JointState``.
+
+    Populates the 12 leg-joint names / positions (radians) in order.
+    The Lite3 reports angles with the opposite sign to the URDF convention,
+    so positions are negated to match."""
+    state = codecs.parse_joint_state(raw)
+    if state is None:
+        return None
+    msg = RosJointState()
+    msg.header.frame_id = "body"
+    msg.name = list(codecs.JOINT_NAMES)
+    msg.position = [-getattr(state, name) for name in codecs.JOINT_NAMES]
+    return msg
+
+
+def _decode_handle(raw: bytes) -> Optional[RosTwist]:
+    """Decode a Lite3 ``HandleState`` (operator joystick) packet into a
+    ``geometry_msgs/Twist``.
+
+    The left stick maps to linear x/y and the right stick to yaw; yaw is
+    negated to match the plugin's velocity-command convention."""
+    state = codecs.parse_handle_state(raw)
+    if state is None:
+        return None
+    msg = RosTwist()
+    msg.linear.x = state.left_axis_forward
+    msg.linear.y = state.left_axis_side
+    msg.angular.z = -state.right_axis_yaw
     return msg
 
 
@@ -392,6 +428,25 @@ class Lite3Plugin(RobotPlugin):
                 decoder=_decode_is_fallen,
                 rate_hz=50.0,
                 description="True when the Lite3 has lost its footing / flipped over",
+            ),
+            # The 12 leg-joint angles, from the Lite3 JointState stream (2306).
+            "JointState": Feedback(
+                key="JointState",
+                msg_type=JointState,
+                transport=telemetry,
+                decoder=_decode_joint_state,
+                rate_hz=100.0,
+                description="The 12 leg-joint angles decoded from the Lite3 JointState stream",
+            ),
+            # Operator joystick / handle command as a Twist, from the Lite3
+            # HandleState stream (2309).
+            "handle": Feedback(
+                key="handle",
+                msg_type=Twist,
+                transport=telemetry,
+                decoder=_decode_handle,
+                rate_hz=50.0,
+                description="Operator joystick command (as a Twist) from the Lite3 HandleState stream",
             ),
         }
 

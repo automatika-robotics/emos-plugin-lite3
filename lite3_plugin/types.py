@@ -1,14 +1,15 @@
 """SupportedType wrappers for Lite3 feedback.
 
 The Lite3's odometry and battery map onto Sugarcoat's built-in ``Odometry`` and
-``Float64`` types, and its robot-status / balance flags onto the built-in
-``String`` / ``Bool`` types, so only the IMU and the ultrasound rangefinders
-need custom wrappers — built here with
-:func:`ros_sugar.robot.create_supported_type`.
+``Float64`` types, its robot-status / balance flags onto the built-in
+``String`` / ``Bool`` types, and its operator-joystick handle state onto the
+built-in ``Twist`` type. The IMU, the ultrasound rangefinders and the leg
+``JointState`` need custom wrappers.
 """
 
 import numpy as np
 from sensor_msgs.msg import Imu as RosImu
+from sensor_msgs.msg import JointState as RosJointState
 from sensor_msgs.msg import Range as RosRange
 
 from ros_sugar.io.supported_types import _additional_types
@@ -48,6 +49,12 @@ def _range_callback(msg: RosRange) -> float:
     return float(msg.range)
 
 
+def _joint_state_callback(msg: RosJointState) -> np.ndarray:
+    """Lite3 JointState message -> array of the 12 leg-joint positions (rad),
+    ordered as `lite3_plugin.codecs.JOINT_NAMES`."""
+    return np.asarray(msg.position, dtype=np.float64)
+
+
 # Registered SupportedType wrapping sensor_msgs/Imu. The plugin's IMU feedback
 # decoder produces RosImu instances; this type's callback turns them into an
 # array for recipe code.
@@ -58,5 +65,12 @@ Imu = _relocate(create_supported_type(RosImu, callback=_imu_callback))
 # distance (metres) to recipe code.
 Range = _relocate(create_supported_type(RosRange, callback=_range_callback))
 
+# Registered SupportedType wrapping sensor_msgs/JointState for the 12 leg
+# joints. The plugin's JointState feedback decoder produces RosJointState
+# instances; this type's callback exposes the position array to recipe code.
+JointState = _relocate(
+    create_supported_type(RosJointState, callback=_joint_state_callback)
+)
 
-__all__ = ["Imu", "Range"]
+
+__all__ = ["Imu", "Range", "JointState"]

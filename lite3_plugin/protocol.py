@@ -83,6 +83,23 @@ class RobotState(ctypes.Structure):
     ]
 
 
+class RobotStateWithPolicy(ctypes.Structure):
+    """Lite3 ``RobotState`` layout on newer ``Lite3 transfer package``
+    Adds ``robot_policy_state`` int after ``robot_gait_state``, making the
+    frame 4 bytes larger.
+
+    Plugin auto-detects which one a packet is by its length. The extra field
+    reports the robot's active control policy and is not otherwise consumed.
+    """
+
+    _pack_ = 4
+    _fields_ = (
+        list(RobotState._fields_[:2])
+        + [("robot_policy_state", ctypes.c_int)]
+        + list(RobotState._fields_[2:])
+    )
+
+
 class RobotStateReceived(ctypes.Structure):
     """Framed :class:`RobotState` packet — ``code`` is 2305."""
 
@@ -92,6 +109,18 @@ class RobotStateReceived(ctypes.Structure):
         ("size", ctypes.c_int),
         ("cons_code", ctypes.c_int),
         ("data", RobotState),
+    ]
+
+
+class RobotStateReceivedWithPolicy(ctypes.Structure):
+    """Framed :class:`RobotStateWithPolicy` packet — ``code`` is 2305 (newer layout)."""
+
+    _pack_ = 4
+    _fields_ = [
+        ("code", ctypes.c_int),
+        ("size", ctypes.c_int),
+        ("cons_code", ctypes.c_int),
+        ("data", RobotStateWithPolicy),
     ]
 
 
@@ -160,6 +189,9 @@ HANDLE_STATE_CODE = 2309
 
 # Packet sizes, used for type dispatch exactly as the C++ bridge does.
 ROBOT_STATE_SIZE = ctypes.sizeof(RobotStateReceived)
+# Newer RobotState layout — 4 bytes larger; supported alongside the
+# default so both firmware revisions work (see codecs.parse_robot_state).
+ROBOT_STATE_WITH_POLICY_SIZE = ctypes.sizeof(RobotStateReceivedWithPolicy)
 JOINT_STATE_SIZE = ctypes.sizeof(JointStateReceived)
 HANDLE_STATE_SIZE = ctypes.sizeof(HandleStateReceived)
 
@@ -216,6 +248,8 @@ __all__ = [
     "ComplexCMD",
     "RobotState",
     "RobotStateReceived",
+    "RobotStateWithPolicy",
+    "RobotStateReceivedWithPolicy",
     "JointState",
     "JointStateReceived",
     "HandleState",
@@ -224,6 +258,7 @@ __all__ = [
     "JOINT_STATE_CODE",
     "HANDLE_STATE_CODE",
     "ROBOT_STATE_SIZE",
+    "ROBOT_STATE_WITH_POLICY_SIZE",
     "JOINT_STATE_SIZE",
     "HANDLE_STATE_SIZE",
     "CommandCode",

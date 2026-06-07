@@ -49,11 +49,19 @@ def encode_heartbeat() -> bytes:
 # Telemetry decoding (robot -> host)
 # --------------------------------------------------------------------------
 def parse_robot_state(raw: bytes) -> Optional[protocol.RobotState]:
-    """Return the :class:`~.protocol.RobotState` from a telemetry packet, or
-    ``None`` if ``raw`` is not a well-formed robot-state frame."""
-    if len(raw) != protocol.ROBOT_STATE_SIZE:
+    """Return the robot-state payload from a telemetry packet, or ``None`` if
+    ``raw`` is not a well-formed robot-state frame.
+
+    Two on-the-wire layouts are accepted, auto-detected by packet length: the
+    default `RobotState` and the 4-byte-larger `RobotStateWithPolicy` streamed
+    by newer vendor packages.
+    """
+    if len(raw) == protocol.ROBOT_STATE_SIZE:
+        frame = protocol.RobotStateReceived.from_buffer_copy(raw)
+    elif len(raw) == protocol.ROBOT_STATE_WITH_POLICY_SIZE:
+        frame = protocol.RobotStateReceivedWithPolicy.from_buffer_copy(raw)
+    else:
         return None
-    frame = protocol.RobotStateReceived.from_buffer_copy(raw)
     if frame.code != protocol.ROBOT_STATE_CODE:
         return None
     return frame.data
@@ -129,6 +137,16 @@ FALLEN_BASIC_STATES = frozenset({8, 11})  # lose-control-protection, flipping-ov
 ULTRASOUND_MIN_RANGE = 0.28
 ULTRASOUND_MAX_RANGE = 4.50
 
+# Names of the 12 leg joints, in the order they appear in
+# `protocol.JointState` per leg (Left/Right x Front/Back), the hip / thigh / calf
+# joints. Matches the joint names used by the DeepRobotics transfer node.
+JOINT_NAMES = (
+    "LF_Joint", "LF_Joint_1", "LF_Joint_2",
+    "RF_Joint", "RF_Joint_1", "RF_Joint_2",
+    "LB_Joint", "LB_Joint_1", "LB_Joint_2",
+    "RB_Joint", "RB_Joint_1", "RB_Joint_2",
+)
+
 
 def describe_robot_status(state: protocol.RobotState) -> str:
     """Return a short, stable token describing what the Lite3 is doing now.
@@ -182,5 +200,6 @@ __all__ = [
     "FALLEN_BASIC_STATES",
     "ULTRASOUND_MIN_RANGE",
     "ULTRASOUND_MAX_RANGE",
+    "JOINT_NAMES",
     "quaternion_from_rpy_degrees",
 ]
