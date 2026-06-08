@@ -71,7 +71,7 @@ See the
 - **Heartbeat** — the `0x21040001` keep-alive is sent at 4 Hz while the plugin
   is active, so the robot retains external control.
 
-## Usage
+## Usage in Recipes
 
 `Lite3Plugin` follows Sugarcoat's standard plugin contract: a **zero-argument
 constructor** with every robot-specific endpoint baked in as a class attribute.
@@ -182,7 +182,7 @@ host the speaker is attached to.
 Audio class attributes, overridable by subclass: `AUDIO_HOST` (defaults to
 `MOTION_HOST_IP`), `AUDIO_PORT`, `AUDIO_SAMPLE_RATE`, `AUDIO_BLOCK_SIZE`.
 
-## kompass robot config
+## EMOS robot config
 
 The plugin auto-builds a `RobotConfig` (DIFFERENTIAL_DRIVE drive model, BOX
 footprint of ~61×37×40 cm, sensible Lite3 velocity/acceleration limits) and
