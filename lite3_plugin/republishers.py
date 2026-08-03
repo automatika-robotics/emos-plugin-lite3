@@ -10,7 +10,7 @@ from ros_sugar.core import BaseComponent
 from ros_sugar.core.component import BaseComponentConfig
 from ros_sugar.io.topic import Topic
 
-from .types import Imu
+from ros_sugar.supported_types import Imu
 
 
 @define(frozen=True)
@@ -170,7 +170,7 @@ class Lite3FeedbackPublisher(FeedbackRepublisher):
     ``Imu`` -> ``/imu/data``::
 
         from lite3_plugin import Lite3Plugin, Lite3FeedbackPublisher
-        from kompass.launcher import Launcher
+        from ros_sugar.launch import Launcher
 
         launcher = Launcher(config_file="lite3.yaml", robot_plugin=Lite3Plugin())
         launcher.add_pkg(components=[..., Lite3FeedbackPublisher()])

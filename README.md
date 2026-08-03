@@ -21,7 +21,9 @@ telemetry.
 
 ## Installation
 
-See the
+Within the EMOS stack the plugin depends only on `automatika_ros_sugar`
+(**Sugarcoat ≥ 0.8.0**) — which provides the `RobotConfig` robot model and the
+built-in `Imu` / `JointState` types the plugin uses. See the
 [EMOS install guide](https://emos.automatikarobotics.com/getting-started/installation.html).
 
 ## What the plugin exposes
@@ -30,8 +32,7 @@ See the
   streams (the registry key a recipe passes to `Topic(use_plugin=...)` is in
   brackets). From the `RobotState` packet:
   - leg odometry, standard `nav_msgs/Odometry` (key `Odometry`).
-  - body IMU, custom `SupportedType` via `create_supported_type`
-    (key `Imu`).
+  - body IMU, built-in `Imu` wrapping `sensor_msgs/Imu` (key `Imu`).
   - battery percentage, `std_msgs/Float64` (key `battery`).
   - front / back ultrasonic distance, custom `Range` `SupportedType`
     (keys `ultrasound_front`, `ultrasound_back`).
@@ -43,7 +44,7 @@ See the
     `std_msgs/Bool` (key `is_fallen`).
 
   From the `JointState` and `HandleState` packets:
-  - the 12 leg-joint angles, custom `JointState` wrapping `sensor_msgs/JointState` (key `JointState`).
+  - the 12 leg-joint angles, built-in `JointState` wrapping `sensor_msgs/JointState` (key `JointState`).
   - the operator joystick command as a `geometry_msgs/Twist` (left stick →
     linear x/y, right stick → yaw), built-in `Twist` (key `handle`).
 
@@ -187,8 +188,9 @@ Audio class attributes, overridable by subclass: `AUDIO_HOST` (defaults to
 The plugin auto-builds a `RobotConfig` (DIFFERENTIAL_DRIVE drive model, BOX
 footprint of ~61×37×40 cm, sensible Lite3 velocity/acceleration limits) and
 exposes it as `plugin.robot_config`. Sugarcoat's `Launcher` picks this up at
-`bringup` and broadcasts it to every kompass component on the recipe -- so
-recipes don't need to construct a `RobotConfig` themselves:
+`bringup` and broadcasts it to the components that consume it (e.g. the Kompass
+planner / controller) -- so recipes don't need to construct a `RobotConfig`
+themselves:
 
 ```python
 from ros_sugar.launch import Launcher
@@ -212,6 +214,6 @@ class TunedLite3(Lite3Plugin):
     ROBOT_VX_MAX = 0.6   # safety-capped
 ```
 
-Available kompass class attributes: `ROBOT_DRIVE_TYPE`, `ROBOT_GEOMETRY_TYPE`,
+Available robot-model class attributes: `ROBOT_DRIVE_TYPE`, `ROBOT_GEOMETRY_TYPE`,
 `ROBOT_GEOMETRY_PARAMS`, `ROBOT_VX_MAX` / `ROBOT_VX_ACC` / `ROBOT_VX_DECEL`,
 `ROBOT_OMEGA_MAX` / `ROBOT_OMEGA_ACC` / `ROBOT_OMEGA_DECEL`, `ROBOT_STEER_MAX`.

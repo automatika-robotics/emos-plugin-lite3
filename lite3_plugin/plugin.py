@@ -34,22 +34,7 @@ from std_msgs.msg import Bool as RosBool
 from std_msgs.msg import Float64 as RosFloat64
 from std_msgs.msg import String as RosString
 
-# This plugin provides a kompass ``robot_config``, the rest of it is
-# meant to run inside a kompass based recipe, so kompass is a hard
-# requirement.
-try:
-    from kompass.config import RobotConfig
-    from kompass_core.models import AngularCtrlLimits, LinearCtrlLimits
-except ImportError:
-    import sys
-
-    sys.stderr.write(
-        "[lite3_plugin] 'kompass' (and 'kompass-core') are required because "
-        "this plugin provides a kompass robot_config. See the EMOS install "
-        "guide: https://emos.automatikarobotics.com/getting-started/installation.html\n"
-    )
-    sys.exit(1)
-
+from ros_sugar.config import AngularCtrlLimits, LinearCtrlLimits, RobotConfig
 from ros_sugar.core.action import Action
 from ros_sugar.core.event import Event
 from ros_sugar.robot import (
@@ -61,12 +46,20 @@ from ros_sugar.robot import (
     RobotPlugin,
     UdpTransport,
 )
-from ros_sugar.supported_types import Bool, Float64, Odometry, String, Twist
+from ros_sugar.supported_types import (
+    Bool,
+    Float64,
+    Imu,
+    JointState,
+    Odometry,
+    String,
+    Twist,
+)
 
 from . import audio as audio_codec
 from . import codecs, protocol
 from .protocol import CommandCode
-from .types import Imu, JointState, Range
+from .types import Range
 
 
 
@@ -242,8 +235,7 @@ class Lite3Plugin(RobotPlugin):
 
     Construction is zero-argument: ``Lite3Plugin()`` — every endpoint and tuning
     knob is part of the robot's identity, baked into the class. Override via
-    subclass when you need a non-default deployment (testing on localhost,
-    custom subnet, calibration tweak)::
+    subclass when you need a non-default deployment:
 
         class MyLite3(Lite3Plugin):
             MOTION_HOST_IP = "10.0.0.42"     # robot lives on a different subnet
@@ -279,9 +271,9 @@ class Lite3Plugin(RobotPlugin):
     #: Audio frames per UDP packet.
     AUDIO_BLOCK_SIZE = 1024
 
-    # --- Kompass robot model ---
+    # --- Robot model ---
     # The Lite3 is a quadruped that accepts a Twist, so for kompass planning
-    # purposes it is modelled as DIFFERENTIAL_DRIVE with a CYLINDER footprint.
+    # purposes it is modelled as DIFFERENTIAL_DRIVE with a BOX footprint.
     ROBOT_DRIVE_TYPE = "DIFFERENTIAL_DRIVE"
     ROBOT_GEOMETRY_TYPE = "BOX"
     #: ``[length, width, height]`` in metres -- the Lite3 is ~61x37x40 cm.
@@ -668,7 +660,7 @@ class Lite3Plugin(RobotPlugin):
         """Return a factory that builds an Action sending one ``SimpleCMD``.
 
         ``description`` is stamped onto the factory as ``_tool_description``
-        so :class:`~ros_sugar.robot.ActionRegistry` surfaces it for LLM-driven
+        so `~ros_sugar.robot.ActionRegistry` surfaces it for LLM-driven
         consumers (e.g. EmbodiedAgents' Cortex).
         """
         command = self.transports["command"]
