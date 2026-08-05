@@ -52,6 +52,7 @@ from ros_sugar.supported_types import (
     Imu,
     JointState,
     Odometry,
+    Range,
     String,
     Twist,
 )
@@ -59,7 +60,6 @@ from ros_sugar.supported_types import (
 from . import audio as audio_codec
 from . import codecs, protocol
 from .protocol import CommandCode
-from .types import Range
 
 
 

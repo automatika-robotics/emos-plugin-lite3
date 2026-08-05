@@ -21,9 +21,9 @@ telemetry.
 
 ## Installation
 
-Within the EMOS stack the plugin depends only on `automatika_ros_sugar`
-(**Sugarcoat ≥ 0.8.0**) — which provides the `RobotConfig` robot model and the
-built-in `Imu` / `JointState` types the plugin uses. See the
+Within the EMOS stack the plugin depends only on `Sugarcoat` —
+which provides the `RobotConfig` robot model and the built-in `Imu` /
+`JointState` / `Range` types the plugin uses. See the
 [EMOS install guide](https://emos.automatikarobotics.com/getting-started/installation.html).
 
 ## What the plugin exposes
@@ -34,8 +34,8 @@ built-in `Imu` / `JointState` types the plugin uses. See the
   - leg odometry, standard `nav_msgs/Odometry` (key `Odometry`).
   - body IMU, built-in `Imu` wrapping `sensor_msgs/Imu` (key `Imu`).
   - battery percentage, `std_msgs/Float64` (key `battery`).
-  - front / back ultrasonic distance, custom `Range` `SupportedType`
-    (keys `ultrasound_front`, `ultrasound_back`).
+  - front / back ultrasonic distance, built-in `Range` wrapping
+    `sensor_msgs/Range` (keys `ultrasound_front`, `ultrasound_back`).
   - human-readable status token (`sitting`, `standing`, `walking_flat_fast`,
     `long_jump`, ...), `std_msgs/String` (key `robot_status`).
   - balance flag — `True` while the robot can hold its balance, `False` when
