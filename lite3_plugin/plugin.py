@@ -305,6 +305,9 @@ class Lite3Plugin(RobotPlugin):
         )
         self._vel_x_factor = self.VEL_X_FACTOR
 
+        # The frame rigidly attached to the robot's body
+        self.base_frame = "body"
+
         # Define robot config
         self.robot_config = RobotConfig(
             model_type=self.ROBOT_DRIVE_TYPE,
