@@ -18,6 +18,15 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
+  <!-- External sensor drivers the plugin starts via required_processes when a
+       recipe binds the LiDAR / camera feedbacks. realsense2_camera_msgs carries
+       the custom RGBD message; both driver packages may need building from
+       source (they are not always available through rosdep). -->
+  <exec_depend>livox_ros_driver2</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>realsense2_camera_msgs</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

@@ -12,6 +12,11 @@ find_package(ament_cmake_python REQUIRED)
 # Motion Host UDP protocol directly and maps telemetry onto standard ROS types).
 ament_python_install_package(lite3_plugin)
 
+# The Livox Mid-360 user_config JSON ships with the plugin so the robot adapter
+# and its sensor network config stay versioned together.
+install(DIRECTORY config
+        DESTINATION share/${PROJECT_NAME})
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)

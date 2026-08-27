@@ -38,6 +38,7 @@ from ros_sugar.robot import (  # noqa: E402
 from lite3_plugin import codecs, protocol  # noqa: E402
 from lite3_plugin.protocol import CommandCode  # noqa: E402
 from lite3_plugin import Lite3Plugin  # noqa: E402
+from lite3_plugin.plugin import _rgbd_type  # noqa: E402
 from server_node import MockLite3  # noqa: E402
 
 
@@ -228,7 +229,7 @@ def test_quaternion_from_rpy():
 # Plugin construction & introspection
 # ---------------------------------------------------------------------------
 # The full feedback / event surface the plugin exposes.
-_EXPECTED_FEEDBACKS = {
+_BASE_FEEDBACKS = {
     "Odometry",
     "Imu",
     "battery",
@@ -240,6 +241,13 @@ _EXPECTED_FEEDBACKS = {
     "JointState",
     "handle",
 }
+# Driver-backed sensors (Livox Mid-360 + Intel RealSense), started via
+# required_processes and consumed on native ROS topics. Each has a transport of
+# the same key. RGBD is only exposed when realsense2_camera_msgs is installed.
+_SENSOR_FEEDBACKS = {"lidar", "camera", "camera_info"}
+if _rgbd_type() is not None:
+    _SENSOR_FEEDBACKS = _SENSOR_FEEDBACKS | {"rgbd"}
+_EXPECTED_FEEDBACKS = _BASE_FEEDBACKS | _SENSOR_FEEDBACKS
 _EXPECTED_EVENTS = {"low_battery", "obstacle_ahead", "balance_disturbed", "fallen"}
 
 
@@ -247,7 +255,9 @@ def test_plugin_construction():
     """The plugin builds declaratively and exposes the expected surface."""
     plugin = Lite3Plugin()
     assert plugin.metadata.vendor == "DeepRobotics"
-    assert set(plugin.transports) == {"command", "telemetry", "audio"}
+    assert set(plugin.transports) == (
+        {"command", "telemetry", "audio"} | _SENSOR_FEEDBACKS
+    )
     assert set(plugin.feedbacks) == _EXPECTED_FEEDBACKS
     assert set(plugin.commands) == {"Twist", "Audio"}
     # robot_config is a kompass RobotConfig (kompass is a hard dep of this
@@ -290,6 +300,42 @@ def test_plugin_introspection():
     assert {c["key"] for c in desc["commands"]} == {"Twist", "Audio"}
     assert "sit_stand" in {a["name"] for a in desc["actions"]}
     assert {e["name"] for e in desc["events"]} == _EXPECTED_EVENTS
+
+
+def test_required_processes_gated_on_requested():
+    """Sensor drivers are declared only for the sensors a recipe binds."""
+    plugin = Lite3Plugin()
+
+    # Nothing requested -> no drivers started.
+    plugin._set_requested(frozenset(), frozenset())
+    assert plugin.required_processes() == []
+
+    # Binding the LiDAR declares the Livox driver with its packaged config.
+    plugin._set_requested(frozenset({"lidar"}), frozenset())
+    specs = plugin.required_processes()
+    assert [s.package for s in specs] == ["livox_ros_driver2"]
+    assert specs[0].parameters[0]["user_config_path"] == plugin.LIDAR_CONFIG
+
+    # A colour-only camera bind starts RealSense without depth / RGBD.
+    plugin._set_requested(frozenset({"camera"}), frozenset())
+    (rs,) = plugin.required_processes()
+    assert rs.package == "realsense2_camera"
+    assert rs.parameters[0]["enable_rgbd"] is False
+    assert rs.parameters[0]["enable_depth"] is False
+
+    # Binding RGBD turns on depth + sync + alignment.
+    plugin._set_requested(frozenset({"rgbd"}), frozenset())
+    (rs,) = plugin.required_processes()
+    params = rs.parameters[0]
+    assert params["enable_rgbd"] and params["enable_depth"]
+    assert params["align_depth.enable"] and params["enable_sync"]
+
+    # Both sensors at once -> both drivers.
+    plugin._set_requested(frozenset({"lidar", "camera_info"}), frozenset())
+    assert {s.package for s in plugin.required_processes()} == {
+        "livox_ros_driver2",
+        "realsense2_camera",
+    }
 
 
 # ---------------------------------------------------------------------------

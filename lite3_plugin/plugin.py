@@ -19,10 +19,18 @@ directly, so no separate bridge process is needed.
   twist, gaits, mode switches, ...).
 * **Events** — ``low_battery``, ``obstacle_ahead`` (front ultrasound),
   ``balance_disturbed`` and ``fallen`` events built from the feedback streams.
+* **Sensors** — the robot's Livox Mid-360 LiDAR and Intel RealSense are exposed
+  as native-ROS feedbacks (``lidar`` point cloud; ``camera`` / ``camera_info`` /
+  ``rgbd``), and their vendor drivers (``livox_ros_driver2`` /
+  ``realsense2_camera``) are started on demand from ``required_processes`` --
+  the plugin declares the drivers rather than bridging the data itself, since
+  both ship real ROS drivers whose data rides native DDS.
 * **Heartbeat** — the ``0x21040001`` keep-alive is sent at 4 Hz while active.
 """
 
-from typing import Callable, Optional
+import socket
+from pathlib import Path
+from typing import Callable, List, Optional
 
 import numpy as np
 from geometry_msgs.msg import Twist as RosTwist
@@ -34,7 +42,15 @@ from std_msgs.msg import Bool as RosBool
 from std_msgs.msg import Float64 as RosFloat64
 from std_msgs.msg import String as RosString
 
-from ros_sugar.config import AngularCtrlLimits, LinearCtrlLimits, RobotConfig
+from rclpy.logging import get_logger
+from rclpy.qos import ReliabilityPolicy
+
+from ros_sugar.config import (
+    AngularCtrlLimits,
+    LinearCtrlLimits,
+    QoSConfig,
+    RobotConfig,
+)
 from ros_sugar.core.action import Action
 from ros_sugar.core.event import Event
 from ros_sugar.robot import (
@@ -42,16 +58,22 @@ from ros_sugar.robot import (
     EventRegistry,
     Feedback,
     PluginMetadata,
+    ProcessSpec,
     RobotCommand,
     RobotPlugin,
+    RosTopicTransport,
     UdpTransport,
+    create_supported_type,
 )
 from ros_sugar.supported_types import (
     Bool,
+    CameraInfo,
     Float64,
+    Image,
     Imu,
     JointState,
     Odometry,
+    PointCloud2,
     Range,
     String,
     Twist,
@@ -230,6 +252,45 @@ def _decode_handle(raw: bytes) -> Optional[RosTwist]:
     return msg
 
 
+def _packaged_config(filename: str) -> Optional[str]:
+    """Absolute path to a config file shipped with this package, or ``None``.
+
+    Prefers the installed ament share copy, falls back to the source tree so the
+    plugin also works from a checkout. Returns ``None`` rather than a missing
+    path.
+    """
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        candidate = (
+            Path(get_package_share_directory("lite3_plugin")) / "config" / filename
+        )
+        if candidate.is_file():
+            return str(candidate)
+    except Exception:  # not built/installed, or ament unavailable
+        pass
+    candidate = Path(__file__).resolve().parent.parent / "config" / filename
+    return str(candidate) if candidate.is_file() else None
+
+
+_RGBD_TYPE = None
+_RGBD_UNAVAILABLE = False
+
+
+def _rgbd_type():
+    """The ``realsense2_camera_msgs/RGBD`` ``SupportedType``, built once and cached."""
+    global _RGBD_TYPE, _RGBD_UNAVAILABLE
+    if _RGBD_TYPE is not None or _RGBD_UNAVAILABLE:
+        return _RGBD_TYPE
+    try:
+        from realsense2_camera_msgs.msg import RGBD as RosRGBD
+
+        _RGBD_TYPE = create_supported_type(RosRGBD, module=__name__)
+    except Exception:  # realsense2_camera_msgs not installed
+        _RGBD_UNAVAILABLE = True
+    return _RGBD_TYPE
+
+
 class Lite3Plugin(RobotPlugin):
     """Sugarcoat robot plugin for the DeepRobotics Lite3 quadruped.
 
@@ -287,6 +348,50 @@ class Lite3Plugin(RobotPlugin):
     ROBOT_OMEGA_ACC = 3.0
     ROBOT_OMEGA_DECEL = 3.0
     ROBOT_STEER_MAX = np.pi
+
+    # --- Livox Mid-360 LiDAR (driver started by required_processes) ----------
+    #: Expose the Mid-360 point cloud, and start livox_ros_driver2 for a recipe
+    #: that binds it. Set False on a unit with no LiDAR.
+    HAS_LIDAR = True
+    LIDAR_DRIVER_PACKAGE = "livox_ros_driver2"
+    LIDAR_DRIVER_EXECUTABLE = "livox_ros_driver2_node"
+    #: Livox ``user_config`` JSON (host + lidar IPs and ports). The packaged default
+    #: carries the Mid-360 network defaults, so point ``LIDAR_CONFIG`` at the JSON
+    #: whose IPs match this robot. ``None`` means the driver is not started, and it
+    #: says so.
+    LIDAR_CONFIG: Optional[str] = _packaged_config("mid360_config.json")
+    #: Topic the driver publishes the cloud on, and the frame it is expressed in.
+    LIDAR_TOPIC = "/livox/lidar"
+    LIDAR_FRAME = "livox_frame"
+    #: Livox transfer format (0 = ``sensor_msgs/PointCloud2``) and publish Hz.
+    LIDAR_XFER_FORMAT = 0
+    LIDAR_PUBLISH_FREQ = 10.0
+    #: Host UDP ports the Mid-360 streams to. Checked free before the driver is
+    #: started. Keep in step with the ports in ``LIDAR_CONFIG``.
+    LIDAR_HOST_PORTS = (56101, 56201, 56301)
+
+    # --- Intel RealSense camera (driver started by required_processes) -------
+    #: Expose the RealSense streams, and start realsense2_camera for a recipe
+    #: that binds them.
+    HAS_CAMERA = True
+    CAMERA_DRIVER_PACKAGE = "realsense2_camera"
+    CAMERA_DRIVER_EXECUTABLE = "realsense2_camera_node"
+    #: Node name the driver runs as.
+    CAMERA_NODE_NAME = "camera"
+    #: Bind a specific device only when more than one RealSense is attached.
+    CAMERA_SERIAL_NO: Optional[str] = None
+    #: Topic overrides for the colour image, its CameraInfo, and the synchronised
+    #: RGBD packet. ``None`` derives ``/<CAMERA_NODE_NAME>/<stream>``; set a string
+    #: only for a non-standard namespace / remap.
+    CAMERA_COLOR_TOPIC: Optional[str] = None
+    CAMERA_INFO_TOPIC: Optional[str] = None
+    CAMERA_RGBD_TOPIC: Optional[str] = None
+
+    # --- Sensor feedback QoS -------------------------------------------------
+    #: Feedbacks subscribe BEST_EFFORT so they receive from a driver publishing
+    #: either reliability; sensor streams are high-rate and drop-tolerant.
+    SENSOR_QOS_RELIABILITY = ReliabilityPolicy.BEST_EFFORT
+    SENSOR_QOS_DEPTH = 5
 
     def __init__(self):
         self.metadata = PluginMetadata(
@@ -444,6 +549,10 @@ class Lite3Plugin(RobotPlugin):
                 description="Operator joystick command (as a Twist) from the Lite3 HandleState stream",
             ),
         }
+
+        # Driver-backed sensors (Livox Mid-360, Intel RealSense) as native-ROS
+        # feedbacks.
+        self._add_ros_sensors()
 
         self.commands = {
             # A standard Twist output becomes the Lite3's three velocity packets.
@@ -697,7 +806,151 @@ class Lite3Plugin(RobotPlugin):
         """Build an Event that fires when the robot has lost its footing
         (lose-control-protection or flipping-over state)."""
         fallen = self.feedbacks["is_fallen"].as_topic()
-        return Event(event_condition=fallen.msg.data == True, on_change=True)  # noqa: E712
+        return Event(event_condition=fallen.msg.data == True, on_change=True)
+
+    # -- driver-backed sensors (Livox Mid-360, Intel RealSense) --------------
+    def _add_ros_sensor(self, key: str, topic: str, msg_type, description: str) -> None:
+        """Register a driver-backed sensor stream as a native-ROS feedback."""
+        transport = RosTopicTransport(
+            key,
+            topic_name=topic,
+            msg_type=msg_type,
+            qos=QoSConfig(
+                reliability=self.SENSOR_QOS_RELIABILITY,
+                queue_size=self.SENSOR_QOS_DEPTH,
+            ),
+        )
+        self.transports[key] = transport
+        self.feedbacks[key] = Feedback(
+            key=key, msg_type=msg_type, transport=transport, description=description
+        )
+
+    def _add_ros_sensors(self) -> None:
+        """Register the Livox and RealSense feedbacks the plugin exposes."""
+        if self.HAS_LIDAR:
+            self._add_ros_sensor(
+                "lidar",
+                self.LIDAR_TOPIC,
+                PointCloud2,
+                "Livox Mid-360 point cloud (from livox_ros_driver2)",
+            )
+        if self.HAS_CAMERA:
+            # A directly-launched realsense2_camera node publishes its streams
+            # under the node name, so derive /<node>/<stream> unless overridden.
+            ns = self.CAMERA_NODE_NAME
+            color_topic = self.CAMERA_COLOR_TOPIC or f"/{ns}/color/image_raw"
+            info_topic = self.CAMERA_INFO_TOPIC or f"/{ns}/color/camera_info"
+            rgbd_topic = self.CAMERA_RGBD_TOPIC or f"/{ns}/rgbd"
+            self._add_ros_sensor(
+                "camera",
+                color_topic,
+                Image,
+                "Intel RealSense colour image",
+            )
+            self._add_ros_sensor(
+                "camera_info",
+                info_topic,
+                CameraInfo,
+                "Intel RealSense colour camera intrinsics",
+            )
+            rgbd_type = _rgbd_type()
+            if rgbd_type is not None:
+                self._add_ros_sensor(
+                    "rgbd",
+                    rgbd_topic,
+                    rgbd_type,
+                    "Intel RealSense synchronised colour + depth (RGBD)",
+                )
+            else:
+                get_logger(self.metadata.name).warning(
+                    "realsense2_camera_msgs is not available, so the 'rgbd' "
+                    "feedback is not exposed. Install realsense2_camera to use "
+                    "the synchronised RGBD stream; 'camera' and 'camera_info' "
+                    "are unaffected."
+                )
+
+    def required_processes(self):
+        """Start the Mid-360 and RealSense drivers. Each only if the recipe
+        binds that sensor.
+
+        These sensors ship real vendor ROS drivers, so their data rides native
+        DDS. The launcher owns each process (respawn, captured output, teardown
+        ordered with the recipe), and a recipe that ignores a sensor never pays
+        to run its driver.
+        """
+        processes = []
+        requested = self.requested_feedbacks
+
+        if self.HAS_LIDAR and "lidar" in requested:
+            if self.LIDAR_CONFIG:
+                processes.append(
+                    ProcessSpec(
+                        package=self.LIDAR_DRIVER_PACKAGE,
+                        executable=self.LIDAR_DRIVER_EXECUTABLE,
+                        name="lite3_livox",
+                        parameters=[
+                            {
+                                "xfer_format": self.LIDAR_XFER_FORMAT,
+                                "multi_topic": 0,
+                                "publish_freq": self.LIDAR_PUBLISH_FREQ,
+                                "frame_id": self.LIDAR_FRAME,
+                                "user_config_path": self.LIDAR_CONFIG,
+                            }
+                        ],
+                        precondition=self._lidar_ports_are_free,
+                    )
+                )
+            else:
+                get_logger(self.metadata.name).warning(
+                    "Recipe binds 'lidar' but no Livox config was found. The "
+                    "packaged config/mid360_config.json is missing -- build the "
+                    "package, or set LIDAR_CONFIG to a Mid-360 user_config JSON "
+                    "whose IPs match this robot. Not starting the LiDAR driver."
+                )
+
+        if self.HAS_CAMERA and {"camera", "camera_info", "rgbd"} & requested:
+            want_rgbd = "rgbd" in requested
+            params = {
+                "enable_color": True,
+                # RGBD needs depth + time-synced alignment; a colour-only recipe
+                # skips them.
+                "enable_depth": want_rgbd,
+                "enable_sync": want_rgbd,
+                "align_depth.enable": want_rgbd,
+                "enable_rgbd": want_rgbd,
+                "pointcloud.enable": False,
+            }
+            if self.CAMERA_SERIAL_NO:
+                params["serial_no"] = str(self.CAMERA_SERIAL_NO)
+            processes.append(
+                ProcessSpec(
+                    package=self.CAMERA_DRIVER_PACKAGE,
+                    executable=self.CAMERA_DRIVER_EXECUTABLE,
+                    name=self.CAMERA_NODE_NAME,
+                    parameters=[params],
+                )
+            )
+        return processes
+
+    def _lidar_ports_are_free(self) -> bool:
+        """True when no process already holds the Mid-360's host UDP ports.
+
+        Checked before starting so that reads as a port conflict rather than a crash.
+        """
+        for port in self.LIDAR_HOST_PORTS:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.bind(("", port))
+            except OSError:
+                get_logger(self.metadata.name).warning(
+                    f"UDP {port} is already bound, so the Livox driver will NOT "
+                    "be started -- a second binder receives nothing. A Mid-360 "
+                    "driver is likely already running."
+                )
+                return False
+            finally:
+                sock.close()
+        return True
 
 
 __all__ = ["Lite3Plugin"]
