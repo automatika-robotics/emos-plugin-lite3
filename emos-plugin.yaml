@@ -1,0 +1,3 @@
+# EMOS plugin manifest.
+deps:
+  ros: [livox_ros_driver2, realsense2_camera, realsense2_camera_msgs]
