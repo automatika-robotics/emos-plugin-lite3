@@ -532,51 +532,18 @@ def test_heartbeat_is_sent(mock_lite3):
         host.close()
 
 
-def _tf_args(spec) -> dict:
-    """A static_transform_publisher spec's ``--flag value`` arguments as a dict."""
-    args = spec.arguments
-    return dict(zip(args[::2], args[1::2]))
-
-
-def test_ultrasound_frames_are_published_as_static_tf():
-    """The ultrasounds need no driver, but their Range messages name frames
-    nothing else places, so the plugin ships body -> ultrasound_* with them:
-    the front beam along +x, the rear one turned by pi.
-
-    Scoped to what the recipe binds, like the drivers -- a frame for a sensor
-    nothing reads is clutter in someone else's TF tree.
-    """
+def test_ultrasound_mounts_place_the_beams_on_the_body():
+    """The plugin declares where its ultrasounds sit, so the launcher can
+    publish body -> ultrasound_* and consumers can tell which way each beam
+    faces: the front one along +x, the rear one turned by pi."""
     import math
 
     plugin = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
-
-    # Nothing bound -> no transforms, as with the drivers.
-    plugin._set_requested(frozenset(), frozenset())
-    assert plugin.required_processes() == []
-
-    plugin._set_requested(
-        frozenset({"ultrasound_front", "ultrasound_back"}), frozenset()
-    )
-    specs = plugin.required_processes()
-    assert {s.package for s in specs} == {"tf2_ros"}
-    assert {s.executable for s in specs} == {"static_transform_publisher"}
-
-    by_child = {_tf_args(s)["--child-frame-id"]: _tf_args(s) for s in specs}
-    assert set(by_child) == {"ultrasound_front", "ultrasound_back"}
-    assert all(a["--frame-id"] == "body" for a in by_child.values())
+    mounts = {m.child_frame: m for m in plugin.mounts}
+    assert set(mounts) == {"ultrasound_front", "ultrasound_back"}
+    assert all(m.parent_frame == "body" for m in mounts.values())
+    assert mounts["ultrasound_front"].xyz[0] > 0 and mounts["ultrasound_front"].rpy[2] == 0.0
+    assert mounts["ultrasound_back"].xyz[0] < 0
+    assert math.isclose(abs(mounts["ultrasound_back"].rpy[2]), math.pi)
     # The frames are the ones the Range messages name
-    assert set(by_child) <= set(plugin.feedbacks)
-
-    front, back = by_child["ultrasound_front"], by_child["ultrasound_back"]
-    assert float(front["--x"]) > 0 and float(front["--yaw"]) == 0.0
-    assert float(back["--x"]) < 0
-    assert math.isclose(abs(float(back["--yaw"])), math.pi)
-
-    # Binding one rangefinder places only that frame.
-    plugin._set_requested(frozenset({"ultrasound_front"}), frozenset())
-    (front_only,) = plugin.required_processes()
-    assert _tf_args(front_only)["--child-frame-id"] == "ultrasound_front"
-
-    # A recipe that places the frames itself can turn the publishers off.
-    plugin.PUBLISH_ULTRASOUND_TF = False
-    assert plugin.required_processes() == []
+    assert "ultrasound_front" in plugin.feedbacks and "ultrasound_back" in plugin.feedbacks

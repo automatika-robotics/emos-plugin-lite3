@@ -35,14 +35,11 @@ which provides the `RobotConfig` robot model and the built-in `Imu` /
   - body IMU, built-in `Imu` wrapping `sensor_msgs/Imu` (key `Imu`).
   - battery percentage, `std_msgs/Float64` (key `battery`).
   - front / back ultrasonic distance, built-in `Range` wrapping
-    `sensor_msgs/Range` (keys `ultrasound_front`, `ultrasound_back`). Each
-    `Range` names its own frame, and the plugin places those frames on the body
-    itself: binding either one starts a `tf2_ros/static_transform_publisher` for
-    `body` → `ultrasound_front` / `body` → `ultrasound_back` (nose and tail of
-    the trunk, the rear beam turned by pi), so a consumer can tell which way
-    each beam faces. Poses live in `ULTRASOUND_STATIC_TF`; set
-    `PUBLISH_ULTRASOUND_TF = False` when a URDF or `robot_state_publisher` in
-    the recipe already places them.
+    `sensor_msgs/Range` (keys `ultrasound_front`, `ultrasound_back`). Their
+    frames are placed on the body by the plugin's `mounts` (nose and tail of
+    the trunk, the rear beam turned by pi), which the launcher publishes as
+    static transforms `body -> ultrasound_front` / `body -> ultrasound_back`,
+    so a consumer can tell which way each beam faces.
   - human-readable status token (`sitting`, `standing`, `walking_flat_fast`,
     `long_jump`, ...), `std_msgs/String` (key `robot_status`).
   - balance flag — `True` while the robot can hold its balance, `False` when
