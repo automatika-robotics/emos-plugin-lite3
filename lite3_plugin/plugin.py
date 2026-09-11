@@ -438,10 +438,10 @@ class Lite3Plugin(RobotPlugin):
                 max_decel=self.ROBOT_VX_DECEL,
             ),
             ctrl_omega_limits=AngularCtrlLimits(
-                max_vel=self.ROBOT_OMEGA_MAX,
+                max_omega=self.ROBOT_OMEGA_MAX,
                 max_acc=self.ROBOT_OMEGA_ACC,
                 max_decel=self.ROBOT_OMEGA_DECEL,
-                max_steer=self.ROBOT_STEER_MAX,
+                max_ang=self.ROBOT_STEER_MAX,
             ),
         )
 
