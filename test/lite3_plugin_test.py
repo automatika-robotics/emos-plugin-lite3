@@ -530,3 +530,20 @@ def test_heartbeat_is_sent(mock_lite3):
         assert heartbeats["count"] >= 3
     finally:
         host.close()
+
+
+def test_ultrasound_mounts_place_the_beams_on_the_body():
+    """The plugin declares where its ultrasounds sit, so the launcher can
+    publish body -> ultrasound_* and consumers can tell which way each beam
+    faces: the front one along +x, the rear one turned by pi."""
+    import math
+
+    plugin = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
+    mounts = {m.child_frame: m for m in plugin.mounts}
+    assert set(mounts) == {"ultrasound_front", "ultrasound_back"}
+    assert all(m.parent_frame == "body" for m in mounts.values())
+    assert mounts["ultrasound_front"].xyz[0] > 0 and mounts["ultrasound_front"].rpy[2] == 0.0
+    assert mounts["ultrasound_back"].xyz[0] < 0
+    assert math.isclose(abs(mounts["ultrasound_back"].rpy[2]), math.pi)
+    # The frames are the ones the Range messages name
+    assert "ultrasound_front" in plugin.feedbacks and "ultrasound_back" in plugin.feedbacks

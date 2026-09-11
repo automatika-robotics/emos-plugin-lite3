@@ -64,6 +64,7 @@ from ros_sugar.robot import (
     RosTopicTransport,
     UdpTransport,
     create_supported_type,
+    Mount,
 )
 from ros_sugar.supported_types import (
     Bool,
@@ -349,6 +350,14 @@ class Lite3Plugin(RobotPlugin):
     ROBOT_OMEGA_DECEL = 3.0
     ROBOT_STEER_MAX = np.pi
 
+    # Where the built-in ultrasonic rangefinders sit on the body, as
+    # (xyz, rpy) relative to ``base_frame``: nose and tail of the trunk on
+    # its centre line, the rear one facing backwards.
+    SENSOR_MOUNTS = {
+        "ultrasound_front": ((0.305, 0.0, 0.0), (0.0, 0.0, 0.0)),
+        "ultrasound_back": ((-0.305, 0.0, 0.0), (0.0, 0.0, np.pi)),
+    }
+
     # --- Livox Mid-360 LiDAR (driver started by required_processes) ----------
     #: Expose the Mid-360 point cloud, and start livox_ros_driver2 for a recipe
     #: that binds it. Set False on a unit with no LiDAR.
@@ -412,6 +421,11 @@ class Lite3Plugin(RobotPlugin):
 
         # The frame rigidly attached to the robot's body
         self.base_frame = "body"
+        # Static transforms body -> sensor frames, published by the launcher
+        self.mounts = [
+            Mount(parent=self, child=frame, xyz=xyz, rpy=rpy)
+            for frame, (xyz, rpy) in self.SENSOR_MOUNTS.items()
+        ]
 
         # Define robot config
         self.robot_config = RobotConfig(

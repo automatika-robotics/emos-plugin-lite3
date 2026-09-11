@@ -35,7 +35,11 @@ which provides the `RobotConfig` robot model and the built-in `Imu` /
   - body IMU, built-in `Imu` wrapping `sensor_msgs/Imu` (key `Imu`).
   - battery percentage, `std_msgs/Float64` (key `battery`).
   - front / back ultrasonic distance, built-in `Range` wrapping
-    `sensor_msgs/Range` (keys `ultrasound_front`, `ultrasound_back`).
+    `sensor_msgs/Range` (keys `ultrasound_front`, `ultrasound_back`). Their
+    frames are placed on the body by the plugin's `mounts` (nose and tail of
+    the trunk, the rear beam turned by pi), which the launcher publishes as
+    static transforms `body -> ultrasound_front` / `body -> ultrasound_back`,
+    so a consumer can tell which way each beam faces.
   - human-readable status token (`sitting`, `standing`, `walking_flat_fast`,
     `long_jump`, ...), `std_msgs/String` (key `robot_status`).
   - balance flag — `True` while the robot can hold its balance, `False` when
