@@ -8,7 +8,8 @@ directly, so no separate bridge process is needed.
 
 * **Feedback** — binds UDP ``:43897`` for the robot's telemetry stream and
   decodes ``RobotState`` packets into standard ``Odometry`` and ``Imu`` inputs,
-  a ``Float64`` battery level, two ``Range`` ultrasonic distances (front/back),
+  a ``Float64`` battery level, two ``Range`` ultrasonic distances (front/back,
+  whose ``body -> ultrasound_*`` frames the plugin publishes as static TF),
   a ``String`` status token, and ``Bool`` balance / fallen flags; it also
   decodes the ``JointState`` (12 leg-joint angles) and ``HandleState``
   (operator joystick, as a ``Twist``) streams.
@@ -64,7 +65,6 @@ from ros_sugar.robot import (
     RosTopicTransport,
     UdpTransport,
     create_supported_type,
-    Mount,
 )
 from ros_sugar.supported_types import (
     Bool,
@@ -350,13 +350,14 @@ class Lite3Plugin(RobotPlugin):
     ROBOT_OMEGA_DECEL = 3.0
     ROBOT_STEER_MAX = np.pi
 
-    # Where the built-in ultrasonic rangefinders sit on the body, as
-    # (xyz, rpy) relative to ``base_frame``: nose and tail of the trunk on
-    # its centre line, the rear one facing backwards.
-    SENSOR_MOUNTS = {
-        "ultrasound_front": ((0.305, 0.0, 0.0), (0.0, 0.0, 0.0)),
-        "ultrasound_back": ((-0.305, 0.0, 0.0), (0.0, 0.0, np.pi)),
+    # --- Ultrasonic rangefinder frames (static TF, published by the plugin) --
+    ULTRASOUND_STATIC_TF = {
+        "ultrasound_front": (0.305, 0.0, 0.0, 0.0, 0.0, 0.0),
+        "ultrasound_back": (-0.305, 0.0, 0.0, 0.0, 0.0, np.pi),
     }
+
+    #: Publish ``body -> ultrasound_*`` as static TF
+    PUBLISH_ULTRASOUND_TF = True
 
     # --- Livox Mid-360 LiDAR (driver started by required_processes) ----------
     #: Expose the Mid-360 point cloud, and start livox_ros_driver2 for a recipe
@@ -421,11 +422,6 @@ class Lite3Plugin(RobotPlugin):
 
         # The frame rigidly attached to the robot's body
         self.base_frame = "body"
-        # Static transforms body -> sensor frames, published by the launcher
-        self.mounts = [
-            Mount(parent=self, child=frame, xyz=xyz, rpy=rpy)
-            for frame, (xyz, rpy) in self.SENSOR_MOUNTS.items()
-        ]
 
         # Define robot config
         self.robot_config = RobotConfig(
@@ -883,12 +879,65 @@ class Lite3Plugin(RobotPlugin):
                     "are unaffected."
                 )
 
-    def required_processes(self):
-        """Start the Mid-360 and RealSense drivers. Each only if the recipe
-        binds that sensor.
+    def _static_tf_processes(self, frames: dict) -> List[ProcessSpec]:
+        """One ``tf2_ros/static_transform_publisher`` per frame in ``frames``.
 
-        These sensors ship real vendor ROS drivers, so their data rides native
-        DDS. The launcher owns each process (respawn, captured output, teardown
+        :param frames: ``{child_frame: (x, y, z, roll, pitch, yaw)}`` in the
+            body frame.
+        """
+        specs = []
+        for child, (x, y, z, roll, pitch, yaw) in frames.items():
+            specs.append(
+                ProcessSpec(
+                    package="tf2_ros",
+                    executable="static_transform_publisher",
+                    name=f"lite3_tf_{child}",
+                    # Named arguments, not the positional form: the positional
+                    # order is (x y z yaw pitch roll), reversed from how the
+                    # poses are written everywhere else here, and it is
+                    # deprecated. Being explicit removes a silent way to get a
+                    # 90-degree error.
+                    arguments=[
+                        "--x", str(x), "--y", str(y), "--z", str(z),
+                        "--roll", str(roll), "--pitch", str(pitch),
+                        "--yaw", str(yaw),
+                        "--frame-id", self.base_frame,
+                        "--child-frame-id", child,
+                    ],
+                )
+            )
+        return specs
+
+    def _ultrasound_tf_processes(self) -> List[ProcessSpec]:
+        """Static transforms for the rangefinder frames a recipe actually binds.
+
+        Scoped to ``requested_feedbacks``: a frame for a sensor nothing reads is
+        clutter in someone else's TF tree, and worse, asserts a relationship to
+        data that is not flowing.
+        """
+        if not self.PUBLISH_ULTRASOUND_TF:
+            return []
+        requested = self.requested_feedbacks
+        return self._static_tf_processes(
+            {
+                frame: pose
+                for frame, pose in self.ULTRASOUND_STATIC_TF.items()
+                if frame in requested
+            }
+        )
+
+    def required_processes(self):
+        """Start the Mid-360 and RealSense drivers, and publish the ultrasound
+        frames. Each only if the recipe binds that sensor.
+
+        The LiDAR and camera ship real vendor ROS drivers, so their data rides
+        native DDS and the plugin declares the driver rather than bridging it.
+        The ultrasounds need no driver -- they arrive in the robot's own
+        telemetry -- but their ``Range`` messages name frames that nothing else
+        places, so the plugin ships the ``body -> ultrasound_*`` transforms with
+        them. Same robot-specific knowledge, same place.
+
+        The launcher owns each process (respawn, captured output, teardown
         ordered with the recipe), and a recipe that ignores a sensor never pays
         to run its driver.
         """
@@ -944,6 +993,8 @@ class Lite3Plugin(RobotPlugin):
                     parameters=[params],
                 )
             )
+
+        processes.extend(self._ultrasound_tf_processes())
         return processes
 
     def _lidar_ports_are_free(self) -> bool:
