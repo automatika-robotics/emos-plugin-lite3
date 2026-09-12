@@ -29,6 +29,7 @@ directly, so no separate bridge process is needed.
 """
 
 import socket
+import importlib.util
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -64,7 +65,6 @@ from ros_sugar.robot import (
     RobotPlugin,
     RosTopicTransport,
     UdpTransport,
-    create_supported_type,
     Mount,
 )
 from ros_sugar.supported_types import (
@@ -275,22 +275,24 @@ def _packaged_config(filename: str) -> Optional[str]:
     return str(candidate) if candidate.is_file() else None
 
 
-_RGBD_TYPE = None
-_RGBD_UNAVAILABLE = False
-
-
 def _rgbd_type():
-    """The ``realsense2_camera_msgs/RGBD`` ``SupportedType``, built once and cached."""
-    global _RGBD_TYPE, _RGBD_UNAVAILABLE
-    if _RGBD_TYPE is not None or _RGBD_UNAVAILABLE:
-        return _RGBD_TYPE
-    try:
-        from realsense2_camera_msgs.msg import RGBD as RosRGBD
+    """The ``RGBD`` type from embodied-agents, or ``None`` when the RealSense
+    message definitions are not built.
 
-        _RGBD_TYPE = create_supported_type(RosRGBD, module=__name__)
-    except Exception:  # realsense2_camera_msgs not installed
-        _RGBD_UNAVAILABLE = True
-    return _RGBD_TYPE
+    Plugins wrap only messages custom to their robot. ``realsense2_camera_msgs/RGBD``
+    is third-party, so its type comes from the package that consumes it; wrapping
+    it here too would create a second ``RGBD`` that the type registry drops.
+    """
+    if importlib.util.find_spec("realsense2_camera_msgs") is None:
+        return None
+    try:
+        from agents.ros import RGBD
+    except ImportError as e:
+        raise ImportError(
+            "The Lite3 RealSense RGBD stream needs embodied-agents."
+            " Install EMOS (which includes it) or embodied-agents."
+        ) from e
+    return RGBD
 
 
 class Lite3Plugin(RobotPlugin):

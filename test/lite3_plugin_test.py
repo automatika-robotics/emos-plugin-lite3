@@ -606,3 +606,27 @@ def test_lidar_driver_starts_for_the_imu_alone():
 def test_no_drivers_when_nothing_is_bound():
     plugin = Lite3Plugin()
     assert _packages(plugin, set()) == set()
+
+
+@pytest.mark.skipif(_rgbd_type() is None, reason="realsense2_camera_msgs not built")
+def test_rgbd_uses_the_consumer_packages_type():
+    """A plugin wraps only messages custom to its robot. RGBD belongs to
+    embodied-agents, and a second wrapper of it is dropped by the type registry,
+    so a Topic built from the plugin's feedback failed validation in any
+    component that consumed it."""
+    from agents.ros import RGBD
+    from ros_sugar.io.topic import Topic
+
+    plugin = Lite3Plugin()
+    assert plugin.feedbacks["rgbd"].msg_type is RGBD
+    Topic(name="rgbd", msg_type=plugin.feedbacks["rgbd"].msg_type)
+
+
+@pytest.mark.skipif(_rgbd_type() is None, reason="realsense2_camera_msgs not built")
+def test_rgbd_without_embodied_agents_says_what_is_missing(monkeypatch):
+    """A bare 'No module named agents' does not tell anyone that a camera
+    plugin needs embodied-agents, or why."""
+    monkeypatch.setitem(sys.modules, "agents", None)
+    monkeypatch.setitem(sys.modules, "agents.ros", None)
+    with pytest.raises(ImportError, match="embodied-agents"):
+        _rgbd_type()
