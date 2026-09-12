@@ -385,6 +385,9 @@ class Lite3Plugin(RobotPlugin):
     #: Livox transfer format (0 = ``sensor_msgs/PointCloud2``) and publish Hz.
     LIDAR_XFER_FORMAT = 0
     LIDAR_PUBLISH_FREQ = 10.0
+    #: Every feedback the one livox_ros_driver2 process serves. Any of them
+    #: being bound is reason to start it.
+    LIDAR_DRIVER_FEEDBACKS = frozenset({"lidar", "lidar_imu"})
     #: Host UDP ports the Mid-360 streams to. Checked free before the driver is
     #: started. Keep in step with the ports in ``LIDAR_CONFIG``.
     LIDAR_HOST_PORTS = (56101, 56201, 56301, 56401)
@@ -929,7 +932,7 @@ class Lite3Plugin(RobotPlugin):
         processes = []
         requested = self.requested_feedbacks
 
-        if self.HAS_LIDAR and "lidar" in requested:
+        if self.HAS_LIDAR and self.LIDAR_DRIVER_FEEDBACKS & requested:
             if self.LIDAR_CONFIG:
                 processes.append(
                     ProcessSpec(
@@ -950,7 +953,8 @@ class Lite3Plugin(RobotPlugin):
                 )
             else:
                 get_logger(self.metadata.name).warning(
-                    "Recipe binds 'lidar' but no Livox config was found. The "
+                    "Recipe binds a Mid-360 feedback but no Livox config was "
+                    "found. The "
                     "packaged config/mid360_config.json is missing -- build the "
                     "package, or set LIDAR_CONFIG to a Mid-360 user_config JSON "
                     "whose IPs match this robot. Not starting the LiDAR driver."

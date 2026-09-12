@@ -577,3 +577,32 @@ def test_closing_the_host_returns_the_robot_to_manual(mock_lite3):
     assert CommandCode.CONTROL_MANUAL in seen, (
         f"expected CONTROL_MANUAL on teardown, saw {[hex(c) for c in seen]}"
     )
+
+
+def _packages(plugin, keys):
+    plugin._set_requested(frozenset(keys), frozenset())
+    return {spec.package for spec in plugin.required_processes()}
+
+
+def test_camera_driver_starts_for_any_camera_feedback():
+    """Binding any RealSense stream is reason to start the driver -- a recipe
+    that wants only camera_info still needs the node running."""
+    plugin = Lite3Plugin()
+    for key in ("camera", "camera_info", "rgbd"):
+        assert plugin.CAMERA_DRIVER_PACKAGE in _packages(plugin, {key}), (
+            f"binding '{key}' should start the camera driver"
+        )
+
+
+def test_lidar_driver_starts_for_the_imu_alone():
+    """The Mid-360's cloud and IMU come from one driver process, so binding
+    either has to start it. Gating on the cloud alone leaves a recipe that
+    wants only the IMU with a silent topic and no clue why."""
+    plugin = Lite3Plugin()
+    assert plugin.LIDAR_DRIVER_PACKAGE in _packages(plugin, {"lidar_imu"})
+    assert plugin.LIDAR_DRIVER_PACKAGE in _packages(plugin, {"lidar"})
+
+
+def test_no_drivers_when_nothing_is_bound():
+    plugin = Lite3Plugin()
+    assert _packages(plugin, set()) == set()
