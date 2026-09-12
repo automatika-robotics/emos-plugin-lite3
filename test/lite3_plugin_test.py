@@ -244,7 +244,7 @@ _BASE_FEEDBACKS = {
 # Driver-backed sensors (Livox Mid-360 + Intel RealSense), started via
 # required_processes and consumed on native ROS topics. Each has a transport of
 # the same key. RGBD is only exposed when realsense2_camera_msgs is installed.
-_SENSOR_FEEDBACKS = {"lidar", "camera", "camera_info"}
+_SENSOR_FEEDBACKS = {"lidar", "lidar_imu", "camera", "camera_info"}
 if _rgbd_type() is not None:
     _SENSOR_FEEDBACKS = _SENSOR_FEEDBACKS | {"rgbd"}
 _EXPECTED_FEEDBACKS = _BASE_FEEDBACKS | _SENSOR_FEEDBACKS

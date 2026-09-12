@@ -54,6 +54,7 @@ from ros_sugar.config import (
 from ros_sugar.core.action import Action
 from ros_sugar.core.event import Event
 from ros_sugar.robot import (
+    NativeMapping,
     ActionRegistry,
     EventRegistry,
     Feedback,
@@ -369,15 +370,24 @@ class Lite3Plugin(RobotPlugin):
     #: whose IPs match this robot. ``None`` means the driver is not started, and it
     #: says so.
     LIDAR_CONFIG: Optional[str] = _packaged_config("mid360_config.json")
+    #: How this robot's environment gets mapped. DeepRobotics ships no mapping
+    #: tool on the Lite3, so EMOS builds the map itself from the Mid-360's own
+    #: cloud and IMU. z_max is the robot's own height
+    MAPPING = NativeMapping(cloud="lidar", imu="lidar_imu", z_max=0.40)
+
     #: Topic the driver publishes the cloud on, and the frame it is expressed in.
     LIDAR_TOPIC = "/livox/lidar"
     LIDAR_FRAME = "livox_frame"
+    #: Topic the driver publishes the Mid-360's built-in IMU on. Separate from
+    #: the ``Imu`` feedback, which is the robot's own body IMU decoded from
+    #: telemetry at 10 Hz.
+    LIDAR_IMU_TOPIC = "/livox/imu"
     #: Livox transfer format (0 = ``sensor_msgs/PointCloud2``) and publish Hz.
     LIDAR_XFER_FORMAT = 0
     LIDAR_PUBLISH_FREQ = 10.0
     #: Host UDP ports the Mid-360 streams to. Checked free before the driver is
     #: started. Keep in step with the ports in ``LIDAR_CONFIG``.
-    LIDAR_HOST_PORTS = (56101, 56201, 56301)
+    LIDAR_HOST_PORTS = (56101, 56201, 56301, 56401)
 
     # --- Intel RealSense camera (driver started by required_processes) -------
     #: Expose the RealSense streams, and start realsense2_camera for a recipe
@@ -847,6 +857,12 @@ class Lite3Plugin(RobotPlugin):
                 self.LIDAR_TOPIC,
                 PointCloud2,
                 "Livox Mid-360 point cloud (from livox_ros_driver2)",
+            )
+            self._add_ros_sensor(
+                "lidar_imu",
+                self.LIDAR_IMU_TOPIC,
+                Imu,
+                "Livox Mid-360 built-in IMU, for LiDAR-inertial odometry",
             )
         if self.HAS_CAMERA:
             # A directly-launched realsense2_camera node publishes its streams
