@@ -785,6 +785,24 @@ class Lite3Plugin(RobotPlugin):
         )
 
     # -- action / event factories -------------------------------------------
+    def on_detached(self, node, bus) -> None:
+        """Hand control back to the operator's handset as the recipe ends.
+
+        Called before the transports close, so it is the last chance to send
+        anything.
+
+        Best-effort: a teardown that raises would mask whatever actually ended
+        the run, and the robot stops on its own once commands stop arriving.
+        """
+        try:
+            self.transports["command"].send(
+                codecs.encode_simple_cmd(CommandCode.CONTROL_MANUAL, 0, 0)
+            )
+        except Exception as e:  # pragma: no cover - best-effort on teardown
+            get_logger(self.metadata.name).warning(
+                f"Could not return the robot to manual control on shutdown: {e}"
+            )
+
     def _simple_cmd_action(
         self,
         cmd_code: int,

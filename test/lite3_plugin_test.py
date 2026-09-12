@@ -547,3 +547,33 @@ def test_ultrasound_mounts_place_the_beams_on_the_body():
     assert math.isclose(abs(mounts["ultrasound_back"].rpy[2]), math.pi)
     # The frames are the ones the Range messages name
     assert "ultrasound_front" in plugin.feedbacks and "ultrasound_back" in plugin.feedbacks
+
+
+def test_closing_the_host_returns_the_robot_to_manual(mock_lite3):
+    """A recipe that ends -- cleanly or on Ctrl+C -- must hand the handset back.
+
+    The launcher tears every plugin host down after the launch service exits,
+    and ``on_detached`` runs before the transports close, so this is what the
+    robot hears last.
+    """
+    robot, command_port, telemetry_port = mock_lite3
+    plugin = _Lite3PluginForTest(
+        command_port=command_port, telemetry_port=telemetry_port
+    )
+    seen = []
+    original = robot._handle_inbound
+
+    def _capture(data):
+        if len(data) == ctypes.sizeof(protocol.SimpleCMD):
+            seen.append(protocol.SimpleCMD.from_buffer_copy(data).cmd_code)
+        original(data)
+
+    robot._handle_inbound = _capture
+    host = RobotPluginHost(plugin, node=None, bus=InProcessFeedbackBus())
+    host.open()
+    seen.clear()
+    host.close()
+    time.sleep(0.3)
+    assert CommandCode.CONTROL_MANUAL in seen, (
+        f"expected CONTROL_MANUAL on teardown, saw {[hex(c) for c in seen]}"
+    )
