@@ -24,7 +24,6 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from rclpy.serialization import deserialize_message  # noqa: E402
 from nav_msgs.msg import Odometry as RosOdometry  # noqa: E402
 from sensor_msgs.msg import Imu as RosImu  # noqa: E402
 from std_msgs.msg import Float64 as RosFloat64  # noqa: E402
@@ -358,25 +357,18 @@ def test_host_telemetry_decoding(mock_lite3):
     )
     host.open()
     try:
+        # The in-process bus hands over the decoded message itself.
         odom, imu, battery = [], [], []
-        bus.subscribe(
-            "robot/feedback/Odometry",
-            lambda d: odom.append(deserialize_message(d, RosOdometry)),
-        )
-        bus.subscribe(
-            "robot/feedback/Imu",
-            lambda d: imu.append(deserialize_message(d, RosImu)),
-        )
-        bus.subscribe(
-            "robot/feedback/battery",
-            lambda d: battery.append(deserialize_message(d, RosFloat64)),
-        )
+        bus.subscribe("robot/feedback/Odometry", odom.append)
+        bus.subscribe("robot/feedback/Imu", imu.append)
+        bus.subscribe("robot/feedback/battery", battery.append)
         deadline = time.time() + 2.0
         while (not odom or not imu or not battery) and time.time() < deadline:
             time.sleep(0.02)
         assert odom and imu and battery, "telemetry was not decoded onto the bus"
         assert isinstance(odom[0], RosOdometry)
         assert isinstance(imu[0], RosImu)
+        assert isinstance(battery[-1], RosFloat64)
         assert battery[-1].data == pytest.approx(100.0, abs=1.0)
         # All three feedback channels were also pushed to the monitor
         assert {"robot/feedback/Odometry", "robot/feedback/Imu"} <= set(
@@ -404,10 +396,7 @@ def test_host_twist_command(mock_lite3):
         assert robot._vx == pytest.approx(0.6), "robot did not receive the velocity"
 
         decoded = []
-        bus.subscribe(
-            "robot/feedback/Odometry",
-            lambda d: decoded.append(deserialize_message(d, RosOdometry)),
-        )
+        bus.subscribe("robot/feedback/Odometry", decoded.append)
         deadline = time.time() + 2.0
         while not decoded and time.time() < deadline:
             time.sleep(0.02)
