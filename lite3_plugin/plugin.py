@@ -31,7 +31,7 @@ directly, so no separate bridge process is needed.
 import socket
 import importlib.util
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 from geometry_msgs.msg import Twist as RosTwist
@@ -818,15 +818,23 @@ class Lite3Plugin(RobotPlugin):
     ) -> Callable[[], Action]:
         """Return a factory that builds an Action sending one ``SimpleCMD``.
 
+        The action reports its outcome as ``(success, message)``, the return
+        contract every Sugarcoat action follows: whether the datagram left the
+        socket, and what was sent or why it was not.
+
         ``description`` is stamped onto the factory as ``_tool_description``
         so `~ros_sugar.robot.ActionRegistry` surfaces it for LLM-driven
         consumers (e.g. EmbodiedAgents' Cortex).
         """
         command = self.transports["command"]
         payload = codecs.encode_simple_cmd(cmd_code, cmd_value, type_)
-        factory: Callable[[], Action] = lambda: Action(
-            method=lambda: command.send(payload)
-        )
+
+        def _send() -> Tuple[bool, str]:
+            if command.send(payload):
+                return True, f"Sent SimpleCMD {cmd_code} to the Motion Host"
+            return False, f"Could not send SimpleCMD {cmd_code} to the Motion Host"
+
+        factory: Callable[[], Action] = lambda: Action(method=_send)
         if description:
             factory._tool_description = description  # type: ignore[attr-defined]
         return factory

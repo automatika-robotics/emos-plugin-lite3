@@ -426,7 +426,8 @@ def test_named_action_sends_simple_cmd(mock_lite3):
     robot._handle_inbound = _capture
     try:
         action = plugin.actions.sit_stand()
-        action()
+        succeeded, message = action()
+        assert succeeded, message
         deadline = time.time() + 1.0
         while CommandCode.SIT_STAND not in received and time.time() < deadline:
             time.sleep(0.02)
