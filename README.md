@@ -21,16 +21,22 @@ telemetry.
 
 ## Installation
 
-Within the EMOS stack the plugin depends only on `Sugarcoat` —
-which provides the `RobotConfig` robot model and the built-in `Imu` /
-`JointState` / `Range` types the plugin uses. See the
-[EMOS install guide](https://emos.automatikarobotics.com/getting-started/installation.html).
+On a robot running EMOS, install the plugin from the catalog:
+
+```bash
+emos plugin install emos-plugin-lite3
+```
+
+This builds the plugin and resolves the sensor drivers its manifest
+(`emos-plugin.yaml`) declares. See the
+[EMOS plugin guide](https://emos.automatikarobotics.com/getting-started/plugins.html).
 
 ## What the plugin exposes
 
 - **Feedback** — binds UDP `:43897` and decodes the robot's telemetry into ten
-  streams (the registry key a recipe passes to `Topic(use_plugin=...)` is in
-  brackets). From the `RobotState` packet:
+  streams (the feedback key is in brackets; see
+  [Usage in Recipes](#usage-in-recipes) for binding a topic to it). From the
+  `RobotState` packet:
   - leg odometry, standard `nav_msgs/Odometry` (key `Odometry`).
   - body IMU, built-in `Imu` wrapping `sensor_msgs/Imu` (key `Imu`).
   - battery percentage, `std_msgs/Float64` (key `battery`).
@@ -52,6 +58,19 @@ which provides the `RobotConfig` robot model and the built-in `Imu` /
   - the operator joystick command as a `geometry_msgs/Twist` (left stick →
     linear x/y, right stick → yaw), built-in `Twist` (key `handle`).
 
+- **Sensors** — the Mid-360 LiDAR and the RealSense camera ship their own ROS
+  drivers, so their data stays on native ROS topics; the plugin declares the
+  streams and starts the drivers (see [Sensor drivers](#sensor-drivers)):
+  - Mid-360 point cloud, `PointCloud2` on `/livox/lidar` (key `lidar`).
+  - Mid-360 built-in IMU, `Imu` on `/livox/imu` (key `lidar_imu`), for
+    LiDAR-inertial odometry. Not to be confused with the body IMU (key `Imu`)
+    above.
+  - RealSense colour image and intrinsics, `Image` / `CameraInfo` on
+    `/camera/color/image_raw` / `/camera/color/camera_info` (keys `camera`,
+    `camera_info`).
+  - RealSense synchronised colour + depth, `RGBD` on `/camera/rgbd` (key
+    `rgbd`). Exposed only when `realsense2_camera_msgs` is installed.
+
 - **Commands**
   - `Twist` — a standard `Twist` output is encoded to the Lite3's three
     `ComplexCMD` velocity packets (codes 320 / 325 / 321) and sent to UDP `:43893`.
@@ -62,7 +81,8 @@ which provides the `RobotConfig` robot model and the built-in `Imu` /
   `plugin.actions.<name>()`: `sit_stand`, `say_hello`, `twist`, `twist_jump`,
   `moonwalk`, `long_jump`, `stand_zero`, `set_pose_mode`, `set_move_mode`,
   `set_manual_mode`, `set_navigation_mode`, `gait_slow` / `gait_medium` /
-  `gait_fast`, `save_data`, `stop`. Each carries a tool description with
+  `gait_fast`, `save_data`, `stop`. Each reports `(success, message)`: whether
+  the command left the socket. Each also carries a tool description with
   state-machine guidance, so an LLM-driven monitor knows when an action is
   valid to invoke.
 - **Events**, exposed as `plugin.events.<name>(...)`:
@@ -75,6 +95,11 @@ which provides the `RobotConfig` robot model and the built-in `Imu` /
     flipping-over state).
 - **Heartbeat** — the `0x21040001` keep-alive is sent at 4 Hz while the plugin
   is active, so the robot retains external control.
+- **Shutdown** — when the recipe ends, cleanly or on Ctrl+C, the plugin
+  switches the robot back to manual control, handing it back to the
+  operator's handset.
+- **Mapping** — the plugin declares how the robot's environment is mapped (see
+  [Mapping](#mapping)).
 
 ## Usage in Recipes
 
@@ -96,9 +121,20 @@ launcher.on(plugin.events.low_battery(15.0), plugin.actions.sit_stand())
 launcher.bringup()
 ```
 
-A component that declares an `Odometry` or `Imu` input transparently receives
-the robot's decoded telemetry; a component that publishes a `Twist` has its
-output encoded and sent to the Lite3 over UDP. With `multiprocessing=True`,
+A component topic with `use_plugin=True` is bound to one of the plugin's
+streams: to the feedback or command whose key matches the topic's name, or,
+failing that, to the only one with the topic's message type. So an `Odometry`
+input receives the robot's leg odometry whatever it is called, and a `Twist`
+output is encoded and sent to the Lite3 over UDP. Where the plugin has several
+streams of one type (`Imu`, `Range`, `Bool`), name the topic after the key:
+
+```python
+body_imu = Topic(name="Imu", msg_type="Imu", use_plugin=True)
+lidar_imu = Topic(name="lidar_imu", msg_type="Imu", use_plugin=True)
+front = Topic(name="ultrasound_front", msg_type="Range", use_plugin=True)
+```
+
+With `multiprocessing=True`,
 Sugarcoat rebuilds the plugin in each component subprocess from a JSON spec
 and fans telemetry out over a localhost socket — no extra configuration.
 
@@ -118,7 +154,24 @@ plugin = MyLite3()
 ```
 
 Available network class attributes: `MOTION_HOST_IP`, `COMMAND_PORT`,
-`TELEMETRY_PORT`, `BIND_HOST`, `VEL_X_FACTOR`, `SEND_HEARTBEAT`.
+`TELEMETRY_PORT`, `BIND_HOST`, `VEL_X_FACTOR`, `SEND_HEARTBEAT`. The sensor
+attributes are listed under [Sensor drivers](#sensor-drivers).
+
+## Sensor drivers
+
+The launcher starts the LiDAR and camera drivers only for a recipe that binds
+one of their feedbacks, so a recipe that never reads the point cloud never runs
+`livox_ros_driver2`. The launcher owns the processes: they respawn if they die
+and stop with the recipe.
+
+## Mapping
+
+DeepRobotics ships no mapping tool on the Lite3, so the plugin declares
+`NativeMapping`: EMOS builds the map itself from the Mid-360's point cloud
+(`lidar`) and built-in IMU (`lidar_imu`). When the 3D map is flattened to an
+occupancy grid, only points up to 0.40 m (the robot's height) count as
+obstacles. The declaration is `plugin.MAPPING`, and appears under `"mapping"`
+in `python -m ros_sugar.robot inspect lite3_plugin:Lite3Plugin`.
 
 ## Command codes
 
