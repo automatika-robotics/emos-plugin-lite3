@@ -28,24 +28,16 @@ directly, so no separate bridge process is needed.
 * **Heartbeat** — the ``0x21040001`` keep-alive is sent at 4 Hz while active.
 """
 
-import socket
 import importlib.util
+import socket
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 from geometry_msgs.msg import Twist as RosTwist
 from nav_msgs.msg import Odometry as RosOdometry
-from sensor_msgs.msg import Imu as RosImu
-from sensor_msgs.msg import JointState as RosJointState
-from sensor_msgs.msg import Range as RosRange
-from std_msgs.msg import Bool as RosBool
-from std_msgs.msg import Float64 as RosFloat64
-from std_msgs.msg import String as RosString
-
 from rclpy.logging import get_logger
 from rclpy.qos import ReliabilityPolicy
-
 from ros_sugar.config import (
     AngularCtrlLimits,
     LinearCtrlLimits,
@@ -55,17 +47,17 @@ from ros_sugar.config import (
 from ros_sugar.core.action import Action
 from ros_sugar.core.event import Event
 from ros_sugar.robot import (
-    NativeMapping,
     ActionRegistry,
     EventRegistry,
     Feedback,
+    Mount,
+    NativeMapping,
     PluginMetadata,
     ProcessSpec,
     RobotCommand,
     RobotPlugin,
     RosTopicTransport,
     UdpTransport,
-    Mount,
 )
 from ros_sugar.supported_types import (
     Bool,
@@ -80,11 +72,16 @@ from ros_sugar.supported_types import (
     String,
     Twist,
 )
+from sensor_msgs.msg import Imu as RosImu
+from sensor_msgs.msg import JointState as RosJointState
+from sensor_msgs.msg import Range as RosRange
+from std_msgs.msg import Bool as RosBool
+from std_msgs.msg import Float64 as RosFloat64
+from std_msgs.msg import String as RosString
 
 from . import audio as audio_codec
 from . import codecs, protocol
 from .protocol import CommandCode
-
 
 
 # --------------------------------------------------------------------------
@@ -98,12 +95,13 @@ def _decode_odometry(raw: bytes) -> Optional[RosOdometry]:
     msg = RosOdometry()
     msg.header.frame_id = "odom"
     msg.child_frame_id = "body"
-    # pos_world is {x, y, yaw}: the third element is the world-frame heading
-    # in radians, NOT a Z position. The Lite3 walks on the ground plane, so z
-    # stays 0 and the heading goes into the orientation quaternion.
+    # pos_world is {x, y, yaw}: the third element is a heading, NOT a Z
+    # position. The Lite3 walks on the ground plane, so z stays 0.
     msg.pose.pose.position.x = state.pos_world[0]
     msg.pose.pose.position.y = state.pos_world[1]
     msg.pose.pose.position.z = 0.0
+    # The heading is taken from the IMU yaw (rpy[2], degrees) rather than
+    # pos_world[2].
     qx, qy, qz, qw = codecs.quaternion_from_rpy_degrees(0.0, 0.0, state.rpy[2])
     msg.pose.pose.orientation.x = qx
     msg.pose.pose.orientation.y = qy
@@ -707,9 +705,10 @@ class Lite3Plugin(RobotPlugin):
                 "set_navigation_mode": self._simple_cmd_action(
                     CommandCode.CONTROL_NAVIGATION,
                     description=(
-                        "Switch the control source to NAVIGATION mode or AUTONOMOUS mode. The robot can move autonomously"
-                        "by following commands from the onboard "
-                        "navigation system. Idempotent."
+                        "Switch the control source to NAVIGATION mode or "
+                        "AUTONOMOUS mode. The robot can move autonomously by "
+                        "following commands from the onboard navigation "
+                        "system. Idempotent."
                     ),
                 ),
                 # gait selectors -- only take effect in MOVE_MODE
