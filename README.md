@@ -82,9 +82,11 @@ This builds the plugin and resolves the sensor drivers its manifest
   `moonwalk`, `long_jump`, `stand_zero`, `set_pose_mode`, `set_move_mode`,
   `set_manual_mode`, `set_navigation_mode`, `gait_slow` / `gait_medium` /
   `gait_fast`, `save_data`, `stop`. Each reports `(success, message)`: whether
-  the command left the socket. Each also carries a tool description with
-  state-machine guidance, so an LLM-driven monitor knows when an action is
-  valid to invoke.
+  the command left the socket. Keyword arguments given to a factory go to the
+  `Action` it builds (see
+  [Confirming an action worked](#confirming-an-action-worked)). Each also
+  carries a tool description with state-machine guidance, so an LLM-driven
+  monitor knows when an action is valid to invoke.
 - **Events**, exposed as `plugin.events.<name>(...)`:
   - `low_battery(threshold=20.0)` — battery drops below `threshold` percent.
   - `obstacle_ahead(threshold=0.5)` — front ultrasonic distance drops below
@@ -137,6 +139,29 @@ front = Topic(name="ultrasound_front", msg_type="Range", use_plugin=True)
 With `multiprocessing=True`,
 Sugarcoat rebuilds the plugin in each component subprocess from a JSON spec
 and fans telemetry out over a localhost socket — no extra configuration.
+
+### Confirming an action worked
+
+The Lite3 never acknowledges a command, so an action's `(success, message)`
+only says the command was sent. Keyword arguments given to an action factory
+go to the `Action` it builds, so a recipe can have an action wait for the robot's own telemetry to confirm it:
+
+```python
+status = plugin.feedbacks["robot_status"].as_topic()
+
+stand_up = plugin.actions.sit_stand(
+    success=status.msg.data == "standing",
+    timeout=10.0,
+)
+launcher.on(start_event, stand_up)
+```
+
+The action then succeeds only once the robot reports `standing`, and fails if
+it has not within 10 s. Build it after the plugin is attached to the launcher,
+as with events.
+
+Do not give `sit_stand` retries: it toggles, so a second send while the robot
+is still getting up can sit it back down.
 
 ### Overriding for a specific unit
 

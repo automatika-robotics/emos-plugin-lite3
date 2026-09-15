@@ -11,6 +11,7 @@ framework importable::
 
 import base64
 import ctypes
+import inspect
 import io
 import os
 import socket
@@ -28,6 +29,7 @@ from nav_msgs.msg import Odometry as RosOdometry  # noqa: E402
 from sensor_msgs.msg import Imu as RosImu  # noqa: E402
 from std_msgs.msg import Float64 as RosFloat64  # noqa: E402
 
+from ros_sugar.core.action import Action  # noqa: E402
 from ros_sugar.robot import (  # noqa: E402
     InProcessFeedbackBus,
     RobotPlugin,
@@ -428,12 +430,52 @@ def test_named_action_sends_simple_cmd(mock_lite3):
         action = plugin.actions.sit_stand()
         succeeded, message = action()
         assert succeeded, message
+        # The result says which action ran, not just a command code
+        assert "sit_stand" in message
         deadline = time.time() + 1.0
         while CommandCode.SIT_STAND not in received and time.time() < deadline:
             time.sleep(0.02)
         assert CommandCode.SIT_STAND in received
     finally:
         host.close()
+
+
+def test_actions_are_named_after_their_keys():
+    """Every action is named after its registry key, which is what a Routine's
+    cursor and the Monitor's logs report. Each factory names its own Action,
+    so building one never renames another."""
+    plugin = Lite3Plugin()
+    for name in plugin.actions.names():
+        assert getattr(plugin.actions, name)().action_name == name
+
+
+def test_action_factory_forwards_action_kwargs():
+    """Keyword arguments given to an action factory reach the Action it builds,
+    so a recipe can configure a plugin action like any other."""
+    plugin = Lite3Plugin()
+    action = plugin.actions.stop(description="Halt before the doorway")
+    assert action.description == "Halt before the doorway"
+    assert action.action_name == "stop"
+
+
+@pytest.mark.skipif(
+    "success" not in inspect.signature(Action.__init__).parameters,
+    reason="this Sugarcoat's Action does not support monitoring",
+)
+def test_action_factory_accepts_a_monitoring_policy():
+    """The Lite3 never acknowledges a command, so a success condition on its
+    own telemetry is the only way an action can tell it worked. It has to
+    reach the Action through the factory."""
+    plugin = Lite3Plugin()
+    status = plugin.feedbacks["robot_status"].as_topic()
+    action = plugin.actions.sit_stand(
+        success=status.msg.data == "standing", timeout=10.0
+    )
+    assert action.is_monitored
+    assert action.success_event is not None
+    assert action.action_name == "sit_stand"
+    # A name given by the recipe wins over the registry key
+    assert plugin.actions.stop(name="halt", timeout=1.0).action_name == "halt"
 
 
 def test_encode_audio_blocks():

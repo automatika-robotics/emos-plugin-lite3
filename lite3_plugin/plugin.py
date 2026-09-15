@@ -754,6 +754,12 @@ class Lite3Plugin(RobotPlugin):
                 ),
             }
         )
+        # Name each action after its registry key, so the Action and its
+        # (success, message) result say which action ran.
+        for name in self.actions.names():
+            factory = getattr(self.actions, name)
+            if hasattr(factory, "action_name"):
+                factory.action_name = name
 
         # Pre-built event factories.
         self.events = EventRegistry(
@@ -814,26 +820,45 @@ class Lite3Plugin(RobotPlugin):
         type_: int = 0,
         *,
         description: str = "",
-    ) -> Callable[[], Action]:
+    ) -> Callable[..., Action]:
         """Return a factory that builds an Action sending one ``SimpleCMD``.
 
         The action reports its outcome as ``(success, message)``, the return
         contract every Sugarcoat action follows: whether the datagram left the
         socket, and what was sent or why it was not.
 
-        ``description`` is stamped onto the factory as ``_tool_description``
-        so `~ros_sugar.robot.ActionRegistry` surfaces it for LLM-driven
-        consumers (e.g. EmbodiedAgents' Cortex).
+        Keyword arguments given to the factory go to ``Action``. The Lite3
+        never acknowledges a command, so this is how a recipe makes an action
+        verify its effect on a Sugarcoat whose ``Action`` supports monitoring::
+
+            status = plugin.feedbacks["robot_status"].as_topic()
+            plugin.actions.sit_stand(success=status.msg.data == "standing", timeout=10.0)
+
+        The Action is named after the factory's ``action_name`` or a recipe's 
+        ``name=``.
         """
         command = self.transports["command"]
         payload = codecs.encode_simple_cmd(cmd_code, cmd_value, type_)
+        wire = f"SimpleCMD 0x{cmd_code:08X}"
 
         def _send() -> Tuple[bool, str]:
+            name = factory.action_name
             if command.send(payload):
-                return True, f"Sent SimpleCMD {cmd_code} to the Motion Host"
-            return False, f"Could not send SimpleCMD {cmd_code} to the Motion Host"
+                return True, (
+                    f"{name} sent ({wire}). The Lite3 does not acknowledge "
+                    "commands, so this does not confirm the robot acted."
+                )
+            return False, (
+                f"{name} not sent ({wire}): the socket refused the datagram."
+            )
 
-        factory: Callable[[], Action] = lambda: Action(method=_send)
+        def factory(**action_kwargs) -> Action:
+            # An Action is named after its method unless told otherwise.
+            _send.__name__ = factory.action_name
+            return Action(method=_send, **action_kwargs)
+
+        # Name used for the Action and its result.
+        factory.action_name = wire  # type: ignore[attr-defined]
         if description:
             factory._tool_description = description  # type: ignore[attr-defined]
         return factory
