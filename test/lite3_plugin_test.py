@@ -572,13 +572,48 @@ def test_ultrasound_mounts_place_the_beams_on_the_body():
 
     plugin = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
     mounts = {m.child_frame: m for m in plugin.mounts}
-    assert set(mounts) == {"ultrasound_front", "ultrasound_back"}
+    assert {"ultrasound_front", "ultrasound_back"} <= set(mounts)
     assert all(m.parent_frame == "body" for m in mounts.values())
     assert mounts["ultrasound_front"].xyz[0] > 0 and mounts["ultrasound_front"].rpy[2] == 0.0
     assert mounts["ultrasound_back"].xyz[0] < 0
     assert math.isclose(abs(mounts["ultrasound_back"].rpy[2]), math.pi)
     # The frames are the ones the Range messages name
     assert "ultrasound_front" in plugin.feedbacks and "ultrasound_back" in plugin.feedbacks
+
+
+def test_lidar_mount_places_the_cloud_on_the_body():
+    """The Mid-360 cloud is published in LIDAR_FRAME with zero driver
+    extrinsics, so its pose on the body must come from a mount."""
+    plugin = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
+    mounts = {m.child_frame: m for m in plugin.mounts}
+    lidar = mounts[plugin.LIDAR_FRAME]
+    assert lidar.parent_frame == "body"
+    assert tuple(lidar.xyz) == plugin.LIDAR_MOUNT[0]
+    assert tuple(lidar.rpy) == plugin.LIDAR_MOUNT[1]
+
+
+def test_no_lidar_mount_without_a_lidar():
+    class NoLidar(_Lite3PluginForTest):
+        HAS_LIDAR = False
+
+    plugin = NoLidar(command_port=_free_port(), telemetry_port=_free_port())
+    assert plugin.LIDAR_FRAME not in {m.child_frame for m in plugin.mounts}
+
+
+def test_packaged_lidar_config_carries_the_lite3_addresses():
+    """The Mid-360 streams to the Jetson; the driver adds no extrinsics, so the
+    cloud and the Mid-360 IMU share one frame for mapping."""
+    import json
+
+    with open(Lite3Plugin.LIDAR_CONFIG) as f:
+        config = json.load(f)
+    host = config["MID360"]["host_net_info"]
+    assert {host[k] for k in ("cmd_data_ip", "push_msg_ip", "point_data_ip", "imu_data_ip")} == {
+        "192.168.1.103"
+    }
+    (lidar,) = config["lidar_configs"]
+    assert lidar["ip"] == "192.168.1.201"
+    assert not any(lidar["extrinsic_parameter"].values())
 
 
 def test_closing_the_host_returns_the_robot_to_manual(mock_lite3):

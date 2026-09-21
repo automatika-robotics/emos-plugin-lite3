@@ -366,9 +366,8 @@ class Lite3Plugin(RobotPlugin):
     LIDAR_DRIVER_PACKAGE = "livox_ros_driver2"
     LIDAR_DRIVER_EXECUTABLE = "livox_ros_driver2_node"
     #: Livox ``user_config`` JSON (host + lidar IPs and ports). The packaged default
-    #: carries the Mid-360 network defaults, so point ``LIDAR_CONFIG`` at the JSON
-    #: whose IPs match this robot. ``None`` means the driver is not started, and it
-    #: says so.
+    #: carries the Lite3's addresses. Its extrinsics are zero, so the cloud and the
+    #: Mid-360's IMU share ``LIDAR_FRAME``.
     LIDAR_CONFIG: Optional[str] = _packaged_config("mid360_config.json")
     #: How this robot's environment gets mapped. DeepRobotics ships no mapping
     #: tool on the Lite3, so EMOS builds the map itself from the Mid-360's own
@@ -378,6 +377,10 @@ class Lite3Plugin(RobotPlugin):
     #: Topic the driver publishes the cloud on, and the frame it is expressed in.
     LIDAR_TOPIC = "/livox/lidar"
     LIDAR_FRAME = "livox_frame"
+    #: Where the Mid-360 sits on the body, as (xyz, rpy) relative to
+    #: ``base_frame``: forward of centre, on top of the trunk, pitched down.
+    #: Published as the static transform ``body -> LIDAR_FRAME``.
+    LIDAR_MOUNT = ((0.25, 0.0, 0.4), (0.0, 0.2, 0.0))
     #: Topic the driver publishes the Mid-360's built-in IMU on. Separate from
     #: the ``Imu`` feedback, which is the robot's own body IMU decoded from
     #: telemetry at 10 Hz.
@@ -439,6 +442,9 @@ class Lite3Plugin(RobotPlugin):
             Mount(parent=self, child=frame, xyz=xyz, rpy=rpy)
             for frame, (xyz, rpy) in self.SENSOR_MOUNTS.items()
         ]
+        if self.HAS_LIDAR:
+            xyz, rpy = self.LIDAR_MOUNT
+            self.mounts.append(Mount(parent=self, child=self.LIDAR_FRAME, xyz=xyz, rpy=rpy))
 
         # Define robot config
         self.robot_config = RobotConfig(
@@ -834,7 +840,7 @@ class Lite3Plugin(RobotPlugin):
             status = plugin.feedbacks["robot_status"].as_topic()
             plugin.actions.sit_stand(success=status.msg.data == "standing", timeout=10.0)
 
-        The Action is named after the factory's ``action_name`` or a recipe's 
+        The Action is named after the factory's ``action_name`` or a recipe's
         ``name=``.
         """
         command = self.transports["command"]
