@@ -25,11 +25,18 @@ directly, so no separate bridge process is needed.
   ``realsense2_camera``) are started on demand from ``required_processes`` --
   the plugin declares the drivers rather than bridging the data itself, since
   both ship real ROS drivers whose data rides native DDS.
+* **Filtered odometry** — ``odometry_filtered`` is the leg odometry fused with
+  the body IMU by a ``robot_localization`` EKF, which the plugin starts when a
+  recipe binds it. The plugin host publishes the ``Odometry`` / ``Imu``
+  feedbacks on ROS for the EKF, and ``odom -> body`` on TF.
 * **Heartbeat** — the ``0x21040001`` keep-alive is sent at 4 Hz while active.
+* **Exit** — the robot is handed back to manual control as soon as the recipe
+  starts shutting down, and again when the plugin is torn down.
 """
 
 import importlib.util
 import socket
+import threading
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -84,6 +91,12 @@ from . import codecs, protocol
 from .protocol import CommandCode
 
 
+#: Frame the leg odometry is expressed in, and the frame the body IMU's messages
+#: name. Shared by the decoders, the IMU mount and the EKF's parameters.
+_ODOM_FRAME = "odom"
+_IMU_FRAME = "imu"
+
+
 # --------------------------------------------------------------------------
 # Telemetry decoders (raw UDP packet -> ROS message, or None to ignore)
 # --------------------------------------------------------------------------
@@ -93,7 +106,7 @@ def _decode_odometry(raw: bytes) -> Optional[RosOdometry]:
     if state is None:
         return None
     msg = RosOdometry()
-    msg.header.frame_id = "odom"
+    msg.header.frame_id = _ODOM_FRAME
     msg.child_frame_id = "body"
     # pos_world is {x, y, yaw}: the third element is a heading, NOT a Z
     # position. The Lite3 walks on the ground plane, so z stays 0.
@@ -121,7 +134,7 @@ def _decode_imu(raw: bytes) -> Optional[RosImu]:
     if state is None:
         return None
     msg = RosImu()
-    msg.header.frame_id = "imu"
+    msg.header.frame_id = _IMU_FRAME
     qx, qy, qz, qw = codecs.quaternion_from_rpy_degrees(
         state.rpy[0], state.rpy[1], state.rpy[2]
     )
@@ -358,6 +371,33 @@ class Lite3Plugin(RobotPlugin):
         "ultrasound_front": ((0.305, 0.0, 0.0), (0.0, 0.0, 0.0)),
         "ultrasound_back": ((-0.305, 0.0, 0.0), (0.0, 0.0, np.pi)),
     }
+    #: Where the body IMU sits, as (xyz, rpy) relative to ``base_frame``. Its
+    #: messages name their own frame, and robot_localization drops every IMU
+    #: sample it cannot transform into the body frame. Taken as the body origin
+    #: with aligned axes: the leg odometry already reads its heading from this
+    #: IMU's yaw.
+    IMU_MOUNT = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+
+    # --- Filtered odometry (EKF started by required_processes) ---------------
+    #: robot_localization parameters for the EKF behind the ``odometry_filtered``
+    #: feedback. The packaged default fuses the leg odometry and the body IMU.
+    #: ``None`` means the EKF is not started, and it says so. The input topics
+    #: and frame names in it are overridden from the attributes below.
+    EKF_CONFIG: Optional[str] = _packaged_config("ekf.yaml")
+    EKF_PACKAGE = "robot_localization"
+    EKF_EXECUTABLE = "ekf_node"
+    EKF_NODE_NAME = "lite3_ekf"
+    #: Topic the EKF publishes its estimate on, which ``odometry_filtered`` reads.
+    EKF_OUTPUT_TOPIC = "/odometry/filtered"
+    #: Topics the EKF reads the ``Odometry`` and ``Imu`` feedbacks on. Both are
+    #: decoded from UDP, so the plugin host publishes them there for it.
+    EKF_ODOM_TOPIC = "/odom"
+    EKF_IMU_TOPIC = "/imu/data"
+    #: Frame the estimate is expressed in. The EKF publishes
+    #: ``EKF_WORLD_FRAME -> odom``, and the plugin ``odom -> body`` from the leg
+    #: odometry. Keep it the recipe's world frame (``map`` unless the recipe
+    #: sets ``Launcher.world_frame``).
+    EKF_WORLD_FRAME = "map"
 
     # --- Livox Mid-360 LiDAR (driver started by required_processes) ----------
     #: Expose the Mid-360 point cloud, and start livox_ros_driver2 for a recipe
@@ -434,6 +474,13 @@ class Lite3Plugin(RobotPlugin):
             ),
         )
         self._vel_x_factor = self.VEL_X_FACTOR
+        # Host-side, for returning the robot to manual control on exit: the
+        # host's ROS node, whether its ROS has been seen up, and whether the
+        # handset has been handed back already
+        self._host_node = None
+        self._host_ros_was_up = False
+        self._returned_to_manual = False
+        self._manual_lock = threading.Lock()
 
         # The frame rigidly attached to the robot's body
         self.base_frame = "body"
@@ -445,6 +492,8 @@ class Lite3Plugin(RobotPlugin):
         if self.HAS_LIDAR:
             xyz, rpy = self.LIDAR_MOUNT
             self.mounts.append(Mount(parent=self, child=self.LIDAR_FRAME, xyz=xyz, rpy=rpy))
+        xyz, rpy = self.IMU_MOUNT
+        self.mounts.append(Mount(parent=self, child=_IMU_FRAME, xyz=xyz, rpy=rpy))
 
         # Define robot config
         self.robot_config = RobotConfig(
@@ -494,6 +543,10 @@ class Lite3Plugin(RobotPlugin):
                 decoder=_decode_odometry,
                 rate_hz=100.0,
                 description="Leg odometry decoded from the Lite3 RobotState stream",
+                # Whenever the host publishes it on ROS (for the EKF), it also
+                # broadcasts odom -> body: the EKF publishes map -> odom and
+                # leaves that link to the odometry's source
+                publish_tf=True,
             ),
             "Imu": Feedback(
                 key="Imu",
@@ -586,6 +639,14 @@ class Lite3Plugin(RobotPlugin):
         # Driver-backed sensors (Livox Mid-360, Intel RealSense) as native-ROS
         # feedbacks.
         self._add_ros_sensors()
+        self._add_ros_sensor(
+            "odometry_filtered",
+            self.EKF_OUTPUT_TOPIC,
+            Odometry,
+            "Leg odometry fused with the body IMU by a robot_localization EKF, "
+            f"in the '{self.EKF_WORLD_FRAME}' frame. The plugin starts the EKF "
+            "when this is bound.",
+        )
 
         self.commands = {
             # A standard Twist output becomes the Lite3's three velocity packets.
@@ -779,8 +840,55 @@ class Lite3Plugin(RobotPlugin):
 
     # -- heartbeat -----------------------------------------------------------
     def _heartbeat(self) -> None:
-        """Send the Lite3 keep-alive packet."""
+        """Send the Lite3 keep-alive packet, and hand the robot back to manual
+        control once the recipe has started shutting down."""
         self.transports["command"].send(codecs.encode_heartbeat())
+        if self._host_ros_shut_down():
+            self._return_to_manual("the recipe is shutting down")
+
+    def _host_ros_shut_down(self) -> bool:
+        """Whether ROS in the launcher process was up and has shut down.
+
+        That is the first sign a recipe is ending: Ctrl+C, or EMOS stopping it,
+        shuts ROS down at once. Waiting for ``on_detached`` is not enough, as the
+        launch can still be tearing down when EMOS kills it, and then
+        ``on_detached`` never runs. The heartbeat keeps running until then, so
+        it is what notices.
+        """
+        node = self._host_node
+        if node is None or self._returned_to_manual:
+            return False
+        try:
+            up = node.context.ok()
+        except AttributeError:
+            # The node is not initialized yet: bringup, not shutdown
+            return False
+        if up:
+            self._host_ros_was_up = True
+            return False
+        return self._host_ros_was_up
+
+    def _return_to_manual(self, reason: str) -> None:
+        """Hand control back to the operator's handset, once.
+
+        Best-effort: raising here would mask whatever actually ended the run,
+        and the robot stops on its own once commands stop arriving.
+        """
+        with self._manual_lock:
+            if self._returned_to_manual:
+                return
+            self._returned_to_manual = True
+        try:
+            self.transports["command"].send(
+                codecs.encode_simple_cmd(CommandCode.CONTROL_MANUAL, 0, 0)
+            )
+            get_logger(self.metadata.name).info(
+                f"Returned the robot to manual control: {reason}"
+            )
+        except Exception as e:  # pragma: no cover - best-effort on teardown
+            get_logger(self.metadata.name).warning(
+                f"Could not return the robot to manual control ({reason}): {e}"
+            )
 
     # -- command encoders ----------------------------------------------------
     def _encode_twist(self, output):
@@ -801,23 +909,19 @@ class Lite3Plugin(RobotPlugin):
         )
 
     # -- action / event factories -------------------------------------------
+    def on_attached(self, node, bus) -> None:
+        """Keep the host's ROS node, so the heartbeat can tell when the recipe
+        starts shutting down (see `_host_ros_shut_down`)."""
+        self._host_node = node
+
     def on_detached(self, node, bus) -> None:
         """Hand control back to the operator's handset as the recipe ends.
 
         Called before the transports close, so it is the last chance to send
-        anything.
-
-        Best-effort: a teardown that raises would mask whatever actually ended
-        the run, and the robot stops on its own once commands stop arriving.
+        anything. Usually the heartbeat has done it already, as soon as the
+        recipe started shutting down; this covers a run without a heartbeat.
         """
-        try:
-            self.transports["command"].send(
-                codecs.encode_simple_cmd(CommandCode.CONTROL_MANUAL, 0, 0)
-            )
-        except Exception as e:  # pragma: no cover - best-effort on teardown
-            get_logger(self.metadata.name).warning(
-                f"Could not return the robot to manual control on shutdown: {e}"
-            )
+        self._return_to_manual("the plugin is shutting down")
 
     def _simple_cmd_action(
         self,
@@ -961,13 +1065,15 @@ class Lite3Plugin(RobotPlugin):
                 )
 
     def required_processes(self):
-        """Start the Mid-360 and RealSense drivers. Each only if the recipe
-        binds that sensor.
+        """Start the Mid-360 and RealSense drivers, and the EKF behind
+        ``odometry_filtered``. Each only if the recipe binds what it serves.
 
-        These sensors ship real vendor ROS drivers, so their data rides native
-        DDS. The launcher owns each process (respawn, captured output, teardown
-        ordered with the recipe), and a recipe that ignores a sensor never pays
-        to run its driver.
+        The sensors ship real vendor ROS drivers, so their data rides native
+        DDS. The EKF is stock robot_localization over the plugin's own
+        telemetry; it declares the feedbacks it reads, and the plugin host puts
+        them on ROS for it. The launcher owns each process (respawn, captured
+        output, teardown ordered with the recipe), and a recipe that ignores a
+        stream never pays to run what produces it.
         """
         processes = []
         requested = self.requested_feedbacks
@@ -1022,7 +1128,46 @@ class Lite3Plugin(RobotPlugin):
                     parameters=[params],
                 )
             )
+
+        if "odometry_filtered" in requested:
+            if self.EKF_CONFIG:
+                processes.append(self._ekf_process())
+            else:
+                get_logger(self.metadata.name).warning(
+                    "Recipe binds 'odometry_filtered' but no EKF config was "
+                    "found. The packaged config/ekf.yaml is missing -- build the "
+                    "package, or set EKF_CONFIG to a robot_localization YAML. "
+                    "Not starting the EKF."
+                )
         return processes
+
+    def _ekf_process(self) -> ProcessSpec:
+        """The robot_localization EKF fusing the leg odometry and body IMU."""
+        return ProcessSpec(
+            package=self.EKF_PACKAGE,
+            executable=self.EKF_EXECUTABLE,
+            name=self.EKF_NODE_NAME,
+            parameters=[
+                self.EKF_CONFIG,
+                # Set here rather than read from the YAML, so the EKF reads the
+                # topics the host publishes on and names this plugin's frames
+                {
+                    "odom0": self.EKF_ODOM_TOPIC,
+                    "imu0": self.EKF_IMU_TOPIC,
+                    "map_frame": self.EKF_WORLD_FRAME,
+                    "world_frame": self.EKF_WORLD_FRAME,
+                    "odom_frame": _ODOM_FRAME,
+                    "base_link_frame": self.base_frame,
+                },
+            ],
+            remappings=[
+                ("/set_pose", "/initialpose"),
+                # Pinned, so a launcher namespace cannot move it away from the
+                # topic the 'odometry_filtered' feedback subscribes on
+                ("odometry/filtered", self.EKF_OUTPUT_TOPIC),
+            ],
+            inputs={"Odometry": self.EKF_ODOM_TOPIC, "Imu": self.EKF_IMU_TOPIC},
+        )
 
     def _lidar_ports_are_free(self) -> bool:
         """True when no process already holds the Mid-360's host UDP ports.

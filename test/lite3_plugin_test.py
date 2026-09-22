@@ -248,7 +248,10 @@ _BASE_FEEDBACKS = {
 _SENSOR_FEEDBACKS = {"lidar", "lidar_imu", "camera", "camera_info"}
 if _rgbd_type() is not None:
     _SENSOR_FEEDBACKS = _SENSOR_FEEDBACKS | {"rgbd"}
-_EXPECTED_FEEDBACKS = _BASE_FEEDBACKS | _SENSOR_FEEDBACKS
+# Every stream on a native ROS topic, each with a transport of the same key: the
+# sensors, and the EKF's estimate.
+_ROS_FEEDBACKS = _SENSOR_FEEDBACKS | {"odometry_filtered"}
+_EXPECTED_FEEDBACKS = _BASE_FEEDBACKS | _ROS_FEEDBACKS
 _EXPECTED_EVENTS = {"low_battery", "obstacle_ahead", "balance_disturbed", "fallen"}
 
 
@@ -257,7 +260,7 @@ def test_plugin_construction():
     plugin = Lite3Plugin()
     assert plugin.metadata.vendor == "DeepRobotics"
     assert set(plugin.transports) == (
-        {"command", "telemetry", "audio"} | _SENSOR_FEEDBACKS
+        {"command", "telemetry", "audio"} | _ROS_FEEDBACKS
     )
     assert set(plugin.feedbacks) == _EXPECTED_FEEDBACKS
     assert set(plugin.commands) == {"Twist", "Audio"}
@@ -616,17 +619,8 @@ def test_packaged_lidar_config_carries_the_lite3_addresses():
     assert not any(lidar["extrinsic_parameter"].values())
 
 
-def test_closing_the_host_returns_the_robot_to_manual(mock_lite3):
-    """A recipe that ends -- cleanly or on Ctrl+C -- must hand the handset back.
-
-    The launcher tears every plugin host down after the launch service exits,
-    and ``on_detached`` runs before the transports close, so this is what the
-    robot hears last.
-    """
-    robot, command_port, telemetry_port = mock_lite3
-    plugin = _Lite3PluginForTest(
-        command_port=command_port, telemetry_port=telemetry_port
-    )
+def _capture_simple_cmds(robot) -> list:
+    """Record the code of every SimpleCMD the mock robot receives."""
     seen = []
     original = robot._handle_inbound
 
@@ -636,6 +630,36 @@ def test_closing_the_host_returns_the_robot_to_manual(mock_lite3):
         original(data)
 
     robot._handle_inbound = _capture
+    return seen
+
+
+class _HostNode:
+    """The host's ROS node as the plugin sees it: without a context until it is
+    initialized, then with one that is up until the recipe shuts ROS down."""
+
+    class _Context:
+        def __init__(self):
+            self.up = True
+
+        def ok(self):
+            return self.up
+
+    def initialize(self):
+        self.context = self._Context()
+
+
+def test_closing_the_host_returns_the_robot_to_manual(mock_lite3):
+    """A recipe that ends cleanly must hand the handset back.
+
+    The launcher tears every plugin host down after the launch service exits,
+    and ``on_detached`` runs before the transports close, so this is what the
+    robot hears last.
+    """
+    robot, command_port, telemetry_port = mock_lite3
+    plugin = _Lite3PluginForTest(
+        command_port=command_port, telemetry_port=telemetry_port
+    )
+    seen = _capture_simple_cmds(robot)
     host = RobotPluginHost(plugin, node=None, bus=InProcessFeedbackBus())
     host.open()
     seen.clear()
@@ -644,6 +668,54 @@ def test_closing_the_host_returns_the_robot_to_manual(mock_lite3):
     assert CommandCode.CONTROL_MANUAL in seen, (
         f"expected CONTROL_MANUAL on teardown, saw {[hex(c) for c in seen]}"
     )
+
+
+def test_the_robot_returns_to_manual_as_soon_as_the_recipe_shuts_down(mock_lite3):
+    """Ctrl+C, or EMOS stopping a recipe, shuts ROS down at once, but the launch
+    can still be tearing down when EMOS kills it, and then ``on_detached`` never
+    runs. The heartbeat notices ROS going down and hands the handset back then.
+    """
+    robot, command_port, telemetry_port = mock_lite3
+    plugin = _Lite3PluginForTest(
+        command_port=command_port, telemetry_port=telemetry_port
+    )
+    seen = _capture_simple_cmds(robot)
+    node = _HostNode()
+    host = RobotPluginHost(plugin, node=node, bus=InProcessFeedbackBus())
+    host.open()
+    try:
+        # Bringup: the node is not initialized yet, then it is up
+        time.sleep(0.6)
+        node.initialize()
+        time.sleep(0.6)
+        assert CommandCode.CONTROL_MANUAL not in seen, "not while the recipe runs"
+
+        node.context.up = False
+        deadline = time.time() + 2.0
+        while CommandCode.CONTROL_MANUAL not in seen and time.time() < deadline:
+            time.sleep(0.05)
+        assert CommandCode.CONTROL_MANUAL in seen, (
+            f"expected CONTROL_MANUAL once ROS shut down, saw {[hex(c) for c in seen]}"
+        )
+    finally:
+        host.close()
+    time.sleep(0.3)
+    assert seen.count(CommandCode.CONTROL_MANUAL) == 1, "sent once, not again on teardown"
+
+
+def test_a_host_node_not_yet_up_is_not_taken_for_a_shutdown(mock_lite3):
+    """Before the host's node is initialized it has no context; that is bringup,
+    and must not hand the robot back."""
+    robot, command_port, telemetry_port = mock_lite3
+    plugin = _Lite3PluginForTest(
+        command_port=command_port, telemetry_port=telemetry_port
+    )
+    seen = _capture_simple_cmds(robot)
+    host = RobotPluginHost(plugin, node=_HostNode(), bus=InProcessFeedbackBus())
+    host.open()
+    time.sleep(0.8)
+    assert CommandCode.CONTROL_MANUAL not in seen
+    host.close()
 
 
 def _packages(plugin, keys):
@@ -697,3 +769,112 @@ def test_rgbd_without_embodied_agents_says_what_is_missing(monkeypatch):
     monkeypatch.setitem(sys.modules, "agents.ros", None)
     with pytest.raises(ImportError, match="embodied-agents"):
         _rgbd_type()
+
+
+# ---------------------------------------------------------------------------
+# Filtered odometry (robot_localization EKF)
+# ---------------------------------------------------------------------------
+def test_ekf_is_started_only_for_odometry_filtered():
+    """Binding the estimate is what starts the EKF; nothing else does."""
+    plugin = Lite3Plugin()
+
+    plugin._set_requested(frozenset({"Odometry", "Imu"}), frozenset())
+    assert plugin.required_processes() == []
+
+    plugin._set_requested(frozenset({"odometry_filtered"}), frozenset())
+    (ekf,) = plugin.required_processes()
+    assert (ekf.package, ekf.executable) == ("robot_localization", "ekf_node")
+    assert ekf.parameters[0] == plugin.EKF_CONFIG
+
+
+def test_ekf_reads_the_topics_the_host_publishes_the_feedbacks_on():
+    """The EKF's inputs and the parameters naming its input topics come from the
+    same attributes, so the host publishes exactly where the EKF subscribes."""
+    plugin = Lite3Plugin()
+    plugin._set_requested(frozenset({"odometry_filtered"}), frozenset())
+    (ekf,) = plugin.required_processes()
+
+    overrides = ekf.parameters[1]
+    assert ekf.inputs == {"Odometry": overrides["odom0"], "Imu": overrides["imu0"]}
+    # The frames the decoders stamp and the plugin's base frame
+    assert overrides["odom_frame"] == _decode_odometry_frames()[0]
+    assert overrides["base_link_frame"] == plugin.base_frame == "body"
+    assert overrides["map_frame"] == overrides["world_frame"] == plugin.EKF_WORLD_FRAME
+    # Its output lands where the feedback subscribes, whatever the namespace
+    assert ("odometry/filtered", plugin.EKF_OUTPUT_TOPIC) in ekf.remappings
+    assert plugin.feedbacks["odometry_filtered"].transport.topic_name == (
+        plugin.EKF_OUTPUT_TOPIC
+    )
+
+
+def _decode_odometry_frames():
+    """(frame_id, child_frame_id) the odometry decoder stamps."""
+    from lite3_plugin.plugin import _decode_odometry
+
+    frame = protocol.RobotStateReceived()
+    frame.code = protocol.ROBOT_STATE_CODE
+    msg = _decode_odometry(bytes(frame))
+    return msg.header.frame_id, msg.child_frame_id
+
+
+def test_ekf_inputs_resolve_to_host_publications(monkeypatch):
+    """Through the real launcher: both inputs are decoded from UDP, so the host
+    publishes them rather than the EKF being remapped."""
+    from ros_sugar import Launcher
+
+    plugin = Lite3Plugin()
+    launcher = Launcher(robot_plugin=plugin)
+    plugin._set_requested(frozenset({"odometry_filtered"}), frozenset())
+    added = []
+    monkeypatch.setattr(launcher, "add_ros_node", lambda **kw: added.append(kw))
+
+    published = launcher._launch_plugin_processes(plugin)
+
+    assert sorted(published) == [("Imu", "/imu/data"), ("Odometry", "/odom")]
+    (ekf,) = added
+    assert "inputs" not in ekf
+
+
+def test_odometry_owns_odom_to_body_on_tf():
+    """The EKF publishes map -> odom and leaves odom -> body to the odometry."""
+    plugin = Lite3Plugin()
+    assert plugin.feedbacks["Odometry"].publish_tf
+    assert _decode_odometry_frames() == ("odom", plugin.base_frame)
+    assert not plugin.feedbacks["Imu"].publish_tf
+
+
+def test_body_imu_is_mounted_so_the_ekf_can_use_it():
+    """robot_localization drops every IMU sample it cannot transform into the
+    body frame, and the IMU's messages name their own frame."""
+    from lite3_plugin.plugin import _decode_imu
+
+    plugin = Lite3Plugin()
+    frame = protocol.RobotStateReceived()
+    frame.code = protocol.ROBOT_STATE_CODE
+    imu_frame = _decode_imu(bytes(frame)).header.frame_id
+
+    mounts = {m.child_frame: m for m in plugin.mounts}
+    assert imu_frame in mounts
+    assert mounts[imu_frame].parent_frame == plugin.base_frame
+
+
+def test_no_ekf_without_a_config():
+    class NoEkfConfig(Lite3Plugin):
+        EKF_CONFIG = None
+
+    plugin = NoEkfConfig()
+    plugin._set_requested(frozenset({"odometry_filtered"}), frozenset())
+    assert plugin.required_processes() == []
+
+
+def test_packaged_ekf_config_applies_to_any_node_name():
+    """Keyed by the wildcard, so the parameters are not silently ignored when
+    the node is renamed."""
+    import yaml
+
+    plugin = Lite3Plugin()
+    with open(plugin.EKF_CONFIG) as f:
+        config = yaml.safe_load(f)
+    params = config["/**"]["ros__parameters"]
+    assert params["publish_tf"] is True, "the EKF owns map -> odom"
+    assert params["two_d_mode"] is True

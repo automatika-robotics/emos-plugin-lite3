@@ -167,7 +167,11 @@ class Lite3FeedbackPublisher(FeedbackRepublisher):
     ROS2 topics.
 
     Defaults: ``Odometry`` -> ``/odom`` (plus an ``odom`` -> ``body`` TF),
-    ``Imu`` -> ``/imu/data``::
+    ``Imu`` -> ``/imu/data``.
+
+    Not needed to run the EKF: binding ``odometry_filtered`` has the plugin put
+    both on those topics, and ``odom -> body`` on TF, by itself. Do not add this
+    to such a recipe, or each is published twice::
 
         from lite3_plugin import Lite3Plugin, Lite3FeedbackPublisher
         from ros_sugar.launch import Launcher

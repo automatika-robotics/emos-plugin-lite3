@@ -71,6 +71,11 @@ This builds the plugin and resolves the sensor drivers its manifest
   - RealSense synchronised colour + depth, `RGBD` on `/camera/rgbd` (key
     `rgbd`). Exposed only when `realsense2_camera_msgs` is installed.
 
+- **Filtered odometry** — the leg odometry fused with the body IMU by a
+  `robot_localization` EKF, `Odometry` on `/odometry/filtered` in the `map`
+  frame (key `odometry_filtered`). The plugin starts the EKF when a recipe
+  binds it (see [Filtered odometry](#filtered-odometry)).
+
 - **Commands**
   - `Twist` — a standard `Twist` output is encoded to the Lite3's three
     `ComplexCMD` velocity packets (codes 320 / 325 / 321) and sent to UDP `:43893`.
@@ -97,9 +102,13 @@ This builds the plugin and resolves the sensor drivers its manifest
     flipping-over state).
 - **Heartbeat** — the `0x21040001` keep-alive is sent at 4 Hz while the plugin
   is active, so the robot retains external control.
-- **Shutdown** — when the recipe ends, cleanly or on Ctrl+C, the plugin
-  switches the robot back to manual control, handing it back to the
-  operator's handset.
+- **Shutdown** — as soon as the recipe starts shutting down (Ctrl+C, or EMOS
+  stopping it), the plugin switches the robot back to manual control, handing
+  it back to the operator's handset. The heartbeat notices ROS going down and
+  sends it within about a quarter of a second, well before EMOS would kill a
+  recipe that is slow to exit. If it has not been sent by then, the plugin
+  sends it when it is torn down, which covers a unit running without the
+  heartbeat (`SEND_HEARTBEAT = False`).
 - **Mapping** — the plugin declares how the robot's environment is mapped (see
   [Mapping](#mapping)).
 
@@ -125,12 +134,14 @@ launcher.bringup()
 
 A component topic with `use_plugin=True` is bound to one of the plugin's
 streams: to the feedback or command whose key matches the topic's name, or,
-failing that, to the only one with the topic's message type. So an `Odometry`
-input receives the robot's leg odometry whatever it is called, and a `Twist`
-output is encoded and sent to the Lite3 over UDP. Where the plugin has several
-streams of one type (`Imu`, `Range`, `Bool`), name the topic after the key:
+failing that, to the only one with the topic's message type. So a `Twist`
+output is encoded and sent to the Lite3 over UDP whatever it is called. Where
+the plugin has several streams of one type (`Odometry`, `Imu`, `Range`,
+`Bool`), name the topic after the key:
 
 ```python
+leg_odom = Topic(name="Odometry", msg_type="Odometry", use_plugin=True)
+filtered_odom = Topic(name="odometry_filtered", msg_type="Odometry", use_plugin=True)
 body_imu = Topic(name="Imu", msg_type="Imu", use_plugin=True)
 lidar_imu = Topic(name="lidar_imu", msg_type="Imu", use_plugin=True)
 front = Topic(name="ultrasound_front", msg_type="Range", use_plugin=True)
@@ -189,6 +200,33 @@ one of their feedbacks, so a recipe that never reads the point cloud never runs
 `livox_ros_driver2`. The launcher owns the processes: they respawn if they die
 and stop with the recipe.
 
+## Filtered odometry
+
+Binding `odometry_filtered` is all a recipe does to navigate on fused odometry:
+
+```python
+launcher.inputs(
+    location=Topic(name="odometry_filtered", msg_type="Odometry", use_plugin=True)
+)
+```
+
+The plugin then starts `robot_localization`'s `ekf_node` (as `lite3_ekf`) with
+the packaged `config/ekf.yaml`, which fuses the leg odometry and the body IMU.
+The EKF reads them on `/odom` and `/imu/data`, and the plugin host publishes
+the `Odometry` and `Imu` feedbacks there for it. So neither a
+`Lite3FeedbackPublisher` nor a separate localization launch is needed.
+
+The TF tree it produces is `map` → `odom` (from the EKF) → `body` (from the
+plugin, out of the leg odometry), and the plugin places the body IMU with a
+static `body` → `imu`. `/set_pose` is remapped to `/initialpose`, so an initial
+pose from RViz resets the estimate.
+
+Class attributes, for a subclass: `EKF_CONFIG` (another robot_localization
+YAML), `EKF_WORLD_FRAME` (keep it the recipe's world frame; default `map`),
+`EKF_OUTPUT_TOPIC`, `EKF_ODOM_TOPIC`, `EKF_IMU_TOPIC`, `EKF_NODE_NAME`, and
+`IMU_MOUNT`. The plugin sets the EKF's input topics and frame names from these,
+so the corresponding values in the YAML are only defaults.
+
 ## Mapping
 
 DeepRobotics ships no mapping tool on the Lite3, so the plugin declares
@@ -223,6 +261,10 @@ launcher.bringup()
 
 `FeedbackRepublisher` is the generic base — pass it `FeedbackBridge` entries to
 bridge any plugin's feedbacks.
+
+It is not needed for the EKF: binding `odometry_filtered` already puts
+`Odometry` and `Imu` on these topics and `odom` → `body` on TF. Adding it to
+such a recipe publishes each of them twice.
 
 ## Audio output
 
