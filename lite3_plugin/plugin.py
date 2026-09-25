@@ -411,8 +411,12 @@ class Lite3Plugin(RobotPlugin):
     LIDAR_CONFIG: Optional[str] = _packaged_config("mid360_config.json")
     #: How this robot's environment gets mapped. DeepRobotics ships no mapping
     #: tool on the Lite3, so EMOS builds the map itself from the Mid-360's own
-    #: cloud and IMU. z_max is the robot's own height
-    MAPPING = NativeMapping(cloud="lidar", imu="lidar_imu", z_max=0.40)
+    MAPPING = NativeMapping(
+        cloud="lidar",
+        imu="lidar_imu",
+        z_max=0.40,
+        imu_xyz=(0.011, 0.02329, -0.04412),
+    )
 
     #: Topic the driver publishes the cloud on, and the frame it is expressed in.
     LIDAR_TOPIC = "/livox/lidar"

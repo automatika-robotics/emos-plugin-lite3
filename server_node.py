@@ -110,6 +110,9 @@ class MockLite3:
             self._yaw_deg += math.degrees(self._wz) * dt
             self._battery = max(0.0, self._battery - 0.01 * dt)
             self._sock.sendto(self._build_robot_state(), self.telemetry_addr)
+            # The robot interleaves the other two reports in the same stream
+            self._sock.sendto(self._build_joint_state(), self.telemetry_addr)
+            self._sock.sendto(self._build_handle_state(), self.telemetry_addr)
             time.sleep(self.telemetry_period)
 
     def _build_robot_state(self) -> bytes:
@@ -127,6 +130,26 @@ class MockLite3:
         state.rpy_vel[2] = self._wz
         state.battery_level = self._battery
         state.is_charging = False
+        return bytes(frame)
+
+    def _build_joint_state(self) -> bytes:
+        """The 12 leg joints, standing still in a plausible crouch."""
+        frame = protocol.JointStateReceived()
+        frame.code = protocol.JOINT_STATE_CODE
+        frame.size = ctypes.sizeof(protocol.JointState)
+        frame.cons_code = 0
+        for leg in ("LF", "RF", "LB", "RB"):
+            setattr(frame.data, leg + "_Joint", 0.0)      # HipX
+            setattr(frame.data, leg + "_Joint_1", -0.8)   # HipY
+            setattr(frame.data, leg + "_Joint_2", 1.6)    # Knee
+        return bytes(frame)
+
+    def _build_handle_state(self) -> bytes:
+        """The operator's sticks, centred: the handset reports even when idle."""
+        frame = protocol.HandleStateReceived()
+        frame.code = protocol.HANDLE_STATE_CODE
+        frame.size = ctypes.sizeof(protocol.HandleState)
+        frame.cons_code = 0
         return bytes(frame)
 
 
