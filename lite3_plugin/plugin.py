@@ -420,7 +420,7 @@ class Lite3Plugin(RobotPlugin):
     #: Where the Mid-360 sits on the body, as (xyz, rpy) relative to
     #: ``base_frame``: forward of centre, on top of the trunk, pitched down.
     #: Published as the static transform ``body -> LIDAR_FRAME``.
-    LIDAR_MOUNT = ((0.25, 0.0, 0.2), (0.0, 0.2, 0.0))
+    LIDAR_MOUNT = ((0.187, 0.0, 0.129), (0.0, float(np.deg2rad(15.0)), 0.0))
     #: Topic the driver publishes the Mid-360's built-in IMU on. Separate from
     #: the ``Imu`` feedback, which is the robot's own body IMU decoded from
     #: telemetry at 10 Hz.
