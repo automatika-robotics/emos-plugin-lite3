@@ -586,13 +586,24 @@ def test_ultrasound_mounts_place_the_beams_on_the_body():
 
 def test_lidar_mount_places_the_cloud_on_the_body():
     """The Mid-360 cloud is published in LIDAR_FRAME with zero driver
-    extrinsics, so its pose on the body must come from a mount."""
+    extrinsics, so its pose on the body must come from a mount.
+
+    The numbers are DeepRobotics' own, from the ``extrinsic_parameter`` in the
+    ``MID360_config.json`` of their LiDAR-edition image; the position also
+    matches the Motion Development Manual's sensor table (section 1.1.3).
+    """
+    import math
+
     plugin = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
     mounts = {m.child_frame: m for m in plugin.mounts}
     lidar = mounts[plugin.LIDAR_FRAME]
     assert lidar.parent_frame == "body"
     assert tuple(lidar.xyz) == plugin.LIDAR_MOUNT[0]
     assert tuple(lidar.rpy) == plugin.LIDAR_MOUNT[1]
+    # 187 mm forward, 129 mm up, pitched 15 degrees nose-down
+    assert tuple(lidar.xyz) == pytest.approx((0.187, 0.0, 0.129))
+    assert math.degrees(lidar.rpy[1]) == pytest.approx(15.0)
+    assert (lidar.rpy[0], lidar.rpy[2]) == (0.0, 0.0)
 
 
 def test_no_lidar_mount_without_a_lidar():
@@ -617,6 +628,33 @@ def test_packaged_lidar_config_carries_the_lite3_addresses():
     (lidar,) = config["lidar_configs"]
     assert lidar["ip"] == "192.168.1.201"
     assert not any(lidar["extrinsic_parameter"].values())
+
+
+def test_native_mapping_names_sensors_this_plugin_serves():
+    """EMOS builds the map itself, so its session resolves the declaration
+    against this plugin: the two feedback keys, the LiDAR frame's mount (which
+    tells the grid builder where the ground is), and the Mid-360's IMU offset,
+    which nothing else in the system carries.
+    """
+    plugin = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
+    mapping = plugin.MAPPING
+    assert mapping.kind == "native"
+    # Named by feedback key, and both are served by the one Livox driver
+    assert {mapping.cloud, mapping.imu} <= set(plugin.feedbacks)
+    assert {mapping.cloud, mapping.imu} == set(plugin.LIDAR_DRIVER_FEEDBACKS)
+    # The mapping session builds its input topics from these type names
+    assert plugin.feedbacks[mapping.cloud].msg_type.__name__ == "PointCloud2"
+    assert plugin.feedbacks[mapping.imu].msg_type.__name__ == "Imu"
+    # The Mid-360's IMU, 11.0 / 23.29 / -44.12 mm from the LiDAR's origin
+    assert mapping.imu_xyz == pytest.approx((0.011, 0.02329, -0.04412))
+    assert mapping.imu_rpy == (0.0, 0.0, 0.0)
+    # Where the ground is: the LiDAR's mount above the body, plus the body
+    # above the ground. Both have to be there for the grid to be flattened.
+    mounts = {m.child_frame: m for m in plugin.mounts}
+    assert mounts[plugin.LIDAR_FRAME].xyz[2] > 0
+    assert plugin.base_height and plugin.base_height > 0
+    # Obstacles are taken from a band no taller than the robot
+    assert 0 < mapping.z_min < mapping.z_max <= plugin.robot_config.height
 
 
 def _capture_simple_cmds(robot) -> list:
@@ -878,3 +916,5 @@ def test_packaged_ekf_config_applies_to_any_node_name():
     params = config["/**"]["ros__parameters"]
     assert params["publish_tf"] is True, "the EKF owns map -> odom"
     assert params["two_d_mode"] is True
+
+
