@@ -89,6 +89,7 @@ from sensor_msgs.msg import Range as RosRange
 from std_msgs.msg import Bool as RosBool
 from std_msgs.msg import Float64 as RosFloat64
 from std_msgs.msg import String as RosString
+from tf_transformations import euler_from_matrix, euler_matrix
 
 from . import audio as audio_codec
 from . import codecs, protocol
@@ -619,6 +620,9 @@ class Lite3Plugin(RobotPlugin):
     #: How this robot's environment gets mapped. Which IMU to fuse and where it
     #: sits come from the fitted LiDAR, since only one of them has one.
     MAPPING = NativeMapping(cloud="lidar", z_max=0.40)
+    #: Map with the body IMU on a unit whose LiDAR carries none of its own.
+    #: Set False to map LiDAR-only.
+    MAP_WITH_BODY_IMU = True
 
     # --- Intel RealSense camera (driver started by required_processes) -------
     #: Expose the RealSense streams, and start realsense2_camera for a recipe
@@ -1454,9 +1458,35 @@ class Lite3Plugin(RobotPlugin):
         if "lidar_kind" in init_kwargs:
             init_kwargs["lidar_kind"] = kind
         self.lidar: LidarSpec = self.LIDARS[kind]
-        # Mapping needs a LiDAR with IMU of its own.
+        # Use the LiDAR's own where it has one, otherwise the body IMU.
+        imu = self.lidar.imu_feedback
+        imu_xyz, imu_rpy = self.lidar.imu_xyz, self.MAPPING.imu_rpy
+        if imu is None and self.MAP_WITH_BODY_IMU:
+            imu = "Imu"
+            imu_xyz, imu_rpy = self._body_imu_in_lidar_frame()
         self.MAPPING = attrs.evolve(
-            self.MAPPING, imu=self.lidar.imu_feedback, imu_xyz=self.lidar.imu_xyz
+            self.MAPPING, imu=imu, imu_xyz=imu_xyz, imu_rpy=imu_rpy
+        )
+
+    def _body_imu_in_lidar_frame(
+        self,
+    ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+        """Where the body IMU sits in the fitted LiDAR's frame, as (xyz, rpy).
+
+        Mapping requires the IMU's pose in the LiDAR's frame, and the plugin holds
+        both as mounts on the body, so this is the IMU's mount seen from the
+        LiDAR's.
+        """
+        lidar_xyz, lidar_rpy = self.lidar.mount
+        imu_xyz, imu_rpy = self.IMU_MOUNT
+        # 'sxyz' is the convention an rpy is in: yaw about Z, then pitch about Y,
+        # then roll about X
+        body_to_lidar = euler_matrix(*lidar_rpy, "sxyz")[:3, :3]
+        xyz = body_to_lidar.T @ (np.array(imu_xyz) - np.array(lidar_xyz))
+        rotation = body_to_lidar.T @ euler_matrix(*imu_rpy, "sxyz")[:3, :3]
+        return (
+            (float(xyz[0]), float(xyz[1]), float(xyz[2])),
+            tuple(float(angle) for angle in euler_from_matrix(rotation, "sxyz")),
         )
 
     def _detect_lidar_kind(self) -> str:

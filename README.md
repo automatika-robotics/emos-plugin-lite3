@@ -220,7 +220,7 @@ plugin = Lite3Plugin(lidar_kind="robosense")
 ```
 
 A RoboSense has no IMU of its own, so on those units `lidar_imu` is not served
-at all and mapping runs from the cloud alone.
+at all, and mapping fuses the body IMU instead (see [Mapping](#mapping)).
 
 Both drivers are installed: `livox_ros_driver2` from the ROS distro, and
 RoboSense's `rslidar_sdk`, which is published nowhere, built from source by the
@@ -256,11 +256,22 @@ so the corresponding values in the YAML are only defaults.
 ## Mapping
 
 DeepRobotics ships no mapping tool on the Lite3, so the plugin declares
-`NativeMapping`: EMOS builds the map itself from the Mid-360's point cloud
-(`lidar`) and built-in IMU (`lidar_imu`). When the 3D map is flattened to an
-occupancy grid, only points up to 0.40 m (the robot's height) count as
-obstacles. The declaration is `plugin.MAPPING`, and appears under `"mapping"`
-in `python -m ros_sugar.robot inspect lite3_plugin:Lite3Plugin`.
+`NativeMapping`: EMOS builds the map itself from the point cloud (`lidar`) and
+an IMU. When the 3D map is flattened to an occupancy grid, only points up to
+0.40 m (the robot's height) count as obstacles. The declaration is
+`plugin.MAPPING`, and appears under `"mapping"` in
+`python -m ros_sugar.robot inspect lite3_plugin:Lite3Plugin`.
+
+Which IMU depends on the LiDAR fitted:
+
+| Unit      | IMU fused                       | Its pose in the LiDAR frame                                  |
+| :-------- | :------------------------------ | :----------------------------------------------------------- |
+| Mid-360   | `lidar_imu`, inside the LiDAR   | `(0.011, 0.02329, -0.04412)`, from the Livox manual          |
+| RoboSense | `Imu`, the robot's own body IMU | `(-0.12815, 0, -0.10596)`, the plugin's LiDAR mount inverted |
+
+RoboSense has no IMU inside it so the body IMU is declared instead. Set
+`MAP_WITH_BODY_IMU = False` on a unit where the IMU does not help, and mapping will
+run from the cloud alone.
 
 ## Command codes
 

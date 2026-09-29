@@ -20,6 +20,7 @@ import threading
 import time
 
 import attrs
+import numpy as np
 import pytest
 
 # Make `lite3_plugin` and `server_node` importable when run from the repo root.
@@ -836,15 +837,16 @@ def test_robosense_unit_uses_its_own_driver_topic_and_geometry():
 
 
 def test_robosense_unit_serves_no_lidar_imu():
-    """A RoboSense has no IMU, so that feedback is absent rather than silent --
-    and mapping must not ask for one it cannot get."""
+    """A RoboSense has no IMU, so that feedback is absent rather than silent.
+    Mapping then fuses the body IMU instead, which is what the vendor's own
+    faster-LIO does on these units."""
     plugin = _RoboSenseLite3(command_port=_free_port(), telemetry_port=_free_port())
     assert "lidar" in plugin.feedbacks
     assert "lidar_imu" not in plugin.feedbacks
     assert plugin.lidar.feedbacks == frozenset({"lidar"})
     assert plugin.MAPPING.cloud == "lidar"
-    assert plugin.MAPPING.imu is None and plugin.MAPPING.imu_xyz is None
-    # A unit that does have one still declares it. The class attribute carries
+    assert plugin.MAPPING.imu == "Imu"
+    # A unit that does have one fuses that. The class attribute carries
     # neither: which IMU to fuse is a property of the LiDAR that is fitted.
     mid360 = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
     assert mid360.MAPPING.imu == "lidar_imu"
@@ -910,6 +912,74 @@ def test_native_mapping_names_sensors_this_plugin_serves():
     assert plugin.base_height and plugin.base_height > 0
     # Obstacles are taken from a band no taller than the robot
     assert 0 < mapping.z_min < mapping.z_max <= plugin.robot_config.height
+
+
+def test_a_lidar_without_an_imu_maps_with_the_body_imu():
+    """A RoboSense carries no IMU, and mapping without one falls back to
+    LiDAR-only odometry, which a gait pitching the sensor makes hard. The robot
+    has an IMU of its own, and the vendor's faster-LIO maps these units with
+    exactly it."""
+    plugin = _RoboSenseLite3(command_port=_free_port(), telemetry_port=_free_port())
+    mapping = plugin.MAPPING
+
+    assert mapping.imu == "Imu"
+    # The session resolves it against the plugin, so it has to be served
+    assert plugin.feedbacks[mapping.imu].msg_type.__name__ == "Imu"
+    # The vendor's own extrinsic_T places the LiDAR in the IMU frame; mapping
+    # wants the other direction, so these are its negatives
+    assert mapping.imu_xyz == pytest.approx((-0.12815, 0.0, -0.10596))
+    assert mapping.imu_rpy == pytest.approx((0.0, 0.0, 0.0))
+    assert mapping.imu_xyz == pytest.approx(
+        tuple(-v for v in plugin.lidar.mount[0])
+    ), "the body IMU sits at the body origin, so this is the LiDAR mount inverted"
+
+
+def test_the_mid360_keeps_its_own_imu():
+    """A LiDAR with an IMU inside it has the one worth fusing: it shares the
+    sensor's clock and rate, and the body IMU is neither."""
+    plugin = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
+
+    assert plugin.MAPPING.imu == "lidar_imu"
+    assert plugin.MAPPING.imu_xyz == pytest.approx((0.011, 0.02329, -0.04412))
+
+
+def test_mapping_with_the_body_imu_can_be_turned_off():
+    """For a unit where it turns out not to help: the backend then maps from
+    the cloud alone."""
+
+    class LidarOnly(_RoboSenseLite3):
+        MAP_WITH_BODY_IMU = False
+
+    mapping = LidarOnly(
+        command_port=_free_port(), telemetry_port=_free_port()
+    ).MAPPING
+
+    assert mapping.imu is None
+    assert mapping.imu_xyz is None
+
+
+def test_the_body_imu_extrinsic_follows_a_rotated_mount():
+    """The transform is composed rather than negated, so a LiDAR mounted at an
+    angle -- as the Mid-360 is -- would still be placed correctly."""
+    from tf_transformations import euler_matrix
+
+    mount = ((0.1, 0.0, 0.2), (0.0, np.pi / 2, 0.0))
+
+    class Tilted(_RoboSenseLite3):
+        LIDARS = {
+            **Lite3Plugin.LIDARS,
+            "robosense": attrs.evolve(Lite3Plugin.LIDARS["robosense"], mount=mount),
+        }
+
+    plugin = Tilted(command_port=_free_port(), telemetry_port=_free_port())
+
+    # Placing the IMU back on the body lands where the plugin mounts it
+    xyz, rpy = plugin.MAPPING.imu_xyz, plugin.MAPPING.imu_rpy
+    on_body = euler_matrix(*mount[1], "sxyz")[:3, :3] @ np.array(xyz) + np.array(
+        mount[0]
+    )
+    assert on_body == pytest.approx(plugin.IMU_MOUNT[0], abs=1e-9)
+    assert rpy == pytest.approx((0.0, -np.pi / 2, 0.0))
 
 
 def _capture_simple_cmds(robot) -> list:

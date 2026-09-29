@@ -27,7 +27,8 @@ jobs:
       - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y python3-pip
+          apt-get install -y python3-pip \
+              ros-${{ matrix.ros_distro }}-tf-transformations
 
       - name: Build workspace
         run: |
