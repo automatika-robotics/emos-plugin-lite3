@@ -8,5 +8,5 @@ deps:
   ros: [livox_ros_driver2, realsense2_camera, realsense2_camera_msgs, robot_localization]
   system:
     # What rslidar_sdk compiles against
-    conda: [pcl, yaml-cpp]
-    apt: [libpcl-dev, libyaml-cpp-dev]
+    conda: [pcl, yaml-cpp, libpcap]
+    apt: [libpcl-dev, libyaml-cpp-dev, libpcap0.8-dev]
