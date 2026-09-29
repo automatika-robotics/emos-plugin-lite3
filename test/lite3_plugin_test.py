@@ -961,8 +961,6 @@ def test_mapping_with_the_body_imu_can_be_turned_off():
 def test_the_body_imu_extrinsic_follows_a_rotated_mount():
     """The transform is composed rather than negated, so a LiDAR mounted at an
     angle -- as the Mid-360 is -- would still be placed correctly."""
-    from tf_transformations import euler_matrix
-
     mount = ((0.1, 0.0, 0.2), (0.0, np.pi / 2, 0.0))
 
     class Tilted(_RoboSenseLite3):
@@ -973,13 +971,10 @@ def test_the_body_imu_extrinsic_follows_a_rotated_mount():
 
     plugin = Tilted(command_port=_free_port(), telemetry_port=_free_port())
 
-    # Placing the IMU back on the body lands where the plugin mounts it
-    xyz, rpy = plugin.MAPPING.imu_xyz, plugin.MAPPING.imu_rpy
-    on_body = euler_matrix(*mount[1], "sxyz")[:3, :3] @ np.array(xyz) + np.array(
-        mount[0]
-    )
-    assert on_body == pytest.approx(plugin.IMU_MOUNT[0], abs=1e-9)
-    assert rpy == pytest.approx((0.0, -np.pi / 2, 0.0))
+    # The body origin is 0.2 m ahead of a LiDAR pitched a quarter turn, and
+    # 0.1 m along what is now its own downward axis
+    assert plugin.MAPPING.imu_xyz == pytest.approx((0.2, 0.0, -0.1))
+    assert plugin.MAPPING.imu_rpy == pytest.approx((0.0, -np.pi / 2, 0.0))
 
 
 def _capture_simple_cmds(robot) -> list:

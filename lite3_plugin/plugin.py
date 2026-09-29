@@ -69,6 +69,7 @@ from ros_sugar.robot import (
     RobotPlugin,
     RosTopicTransport,
     UdpTransport,
+    pose_relative_to,
 )
 from ros_sugar.supported_types import (
     Bool,
@@ -89,7 +90,6 @@ from sensor_msgs.msg import Range as RosRange
 from std_msgs.msg import Bool as RosBool
 from std_msgs.msg import Float64 as RosFloat64
 from std_msgs.msg import String as RosString
-from tf_transformations import euler_from_matrix, euler_matrix
 
 from . import audio as audio_codec
 from . import codecs, protocol
@@ -1463,30 +1463,11 @@ class Lite3Plugin(RobotPlugin):
         imu_xyz, imu_rpy = self.lidar.imu_xyz, self.MAPPING.imu_rpy
         if imu is None and self.MAP_WITH_BODY_IMU:
             imu = "Imu"
-            imu_xyz, imu_rpy = self._body_imu_in_lidar_frame()
+            # Mapping wants the IMU in the LiDAR's frame; the plugin holds both
+            # as mounts on the body
+            imu_xyz, imu_rpy = pose_relative_to(self.IMU_MOUNT, self.lidar.mount)
         self.MAPPING = attrs.evolve(
             self.MAPPING, imu=imu, imu_xyz=imu_xyz, imu_rpy=imu_rpy
-        )
-
-    def _body_imu_in_lidar_frame(
-        self,
-    ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
-        """Where the body IMU sits in the fitted LiDAR's frame, as (xyz, rpy).
-
-        Mapping requires the IMU's pose in the LiDAR's frame, and the plugin holds
-        both as mounts on the body, so this is the IMU's mount seen from the
-        LiDAR's.
-        """
-        lidar_xyz, lidar_rpy = self.lidar.mount
-        imu_xyz, imu_rpy = self.IMU_MOUNT
-        # 'sxyz' is the convention an rpy is in: yaw about Z, then pitch about Y,
-        # then roll about X
-        body_to_lidar = euler_matrix(*lidar_rpy, "sxyz")[:3, :3]
-        xyz = body_to_lidar.T @ (np.array(imu_xyz) - np.array(lidar_xyz))
-        rotation = body_to_lidar.T @ euler_matrix(*imu_rpy, "sxyz")[:3, :3]
-        return (
-            (float(xyz[0]), float(xyz[1]), float(xyz[2])),
-            tuple(float(angle) for angle in euler_from_matrix(rotation, "sxyz")),
         )
 
     def _detect_lidar_kind(self) -> str:
