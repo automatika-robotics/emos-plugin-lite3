@@ -1269,8 +1269,7 @@ class Lite3Plugin(RobotPlugin):
 
         The sensors ship real vendor ROS drivers, so their data rides native
         DDS. The EKF is stock robot_localization over the plugin's own
-        telemetry; it declares the feedbacks it reads, and the plugin host puts
-        them on ROS for it. The launcher owns each process (respawn, captured
+        telemetry. The launcher owns each process (respawn, captured
         output, teardown ordered with the recipe), and a recipe that ignores a
         stream never pays to run what produces it.
         """
@@ -1278,8 +1277,8 @@ class Lite3Plugin(RobotPlugin):
         requested = self.requested_feedbacks
 
         if self.HAS_LIDAR and self.lidar.feedbacks & requested:
-            # Said before the driver starts, because the failure it describes
-            # is otherwise silent: the node runs and publishes nothing.
+            # Warn before the driver starts, because the failure it describes
+            # is otherwise silent.
             mismatch = self._lidar_vendor_warning()
             if mismatch:
                 get_logger(self.metadata.name).error(mismatch)
@@ -1354,13 +1353,7 @@ class Lite3Plugin(RobotPlugin):
         )
 
     def _robosense_process(self) -> Optional[ProcessSpec]:
-        """The rslidar_sdk node for a RoboSense, or None to use the robot's own.
-
-        RoboSense's driver is not a released ROS package, so an EMOS
-        environment will usually not have it while the robot itself always
-        does. Rather than fail, the plugin then reads the cloud the robot's own
-        driver publishes -- the same topic either way.
-        """
+        """The rslidar_sdk node for a RoboSense, or None to use the robot's own."""
         if not _package_available(self.lidar.driver_package):
             get_logger(self.metadata.name).warning(
                 f"This unit's LiDAR is a RoboSense, whose driver "
@@ -1394,8 +1387,8 @@ class Lite3Plugin(RobotPlugin):
             name=self.EKF_NODE_NAME,
             parameters=[
                 self.EKF_CONFIG,
-                # Set here rather than read from the YAML, so the EKF reads the
-                # topics the host publishes on and names this plugin's frames
+                # Set it here so the EKF reads the topics the host publishes on
+                # and names this plugin's frames
                 {
                     "odom0": self.EKF_ODOM_TOPIC,
                     "imu0": self.EKF_IMU_TOPIC,
@@ -1436,13 +1429,7 @@ class Lite3Plugin(RobotPlugin):
 
     # -- which LiDAR this unit carries ---------------------------------------
     def _apply_lidar_kind(self, lidar_kind: Optional[str] = None) -> None:
-        """Point the LiDAR settings at the fitted unit's driver and geometry.
-
-        The class attributes describe the Mid-360, so ``"livox"`` is a no-op
-        and ``"robosense"`` overrides them on the instance. A RoboSense has no
-        IMU of its own, so it serves one feedback rather than two, and mapping
-        has no LiDAR-rate IMU to fuse.
-        """
+        """Point the LiDAR settings at the fitted unit's driver and geometry."""
         kind = lidar_kind or self.LIDAR_KIND
         if kind == "auto":
             kind = self._detect_lidar_kind() if self.HAS_LIDAR else "livox"
@@ -1474,9 +1461,7 @@ class Lite3Plugin(RobotPlugin):
         """Which LiDAR this unit is fitted with, asked of the robot itself.
 
         DeepRobotics ships the Lite3 with either make and puts both at the same
-        address, so the address cannot answer this and the two drivers cannot
-        be told apart by trying one: the wrong one starts and simply publishes
-        nothing. Two questions the hardware can answer settle it, in order of
+        address. The hardware can answer the following two questions, in order of
         certainty:
 
         1. Is a RoboSense streaming point packets at us? Only a RoboSense does
@@ -1485,12 +1470,10 @@ class Lite3Plugin(RobotPlugin):
            IEEE registry and Livox is not, so a device that answers without
            matching RoboSense is the Mid-360.
 
-        Falls back to Livox, saying so, when the robot answers neither -- which
-        is what a unit with its LiDAR unplugged looks like.
+        Falls back to Livox when the robot answers neither.
         """
         log = get_logger(self.metadata.name)
-        # Read from the specs rather than self.lidar, which is what this
-        # decides: the MSOP port a RoboSense would stream to, and the address a
+        # the MSOP port a RoboSense would stream to, and the address a
         # Mid-360 would answer at.
         msop = self.LIDARS["robosense"].host_ports[0]
         streaming = _robosense_is_streaming(msop, self.LIDAR_DETECT_SECONDS)
@@ -1521,11 +1504,6 @@ class Lite3Plugin(RobotPlugin):
     def _lidar_vendor_warning(self) -> Optional[str]:
         """What the device at the configured LiDAR address turns out to be,
         when that contradicts ``LIDAR_KIND``.
-
-        Two LiDAR makes answer at the same address on these robots and only
-        their protocol tells them apart, so the wrong driver starts, publishes
-        nothing, and looks like a dead sensor. The address's hardware vendor
-        settles it in one lookup, without asking anyone to run anything.
         """
         ip = self.lidar_address()
         if ip is None:
@@ -1547,9 +1525,7 @@ class Lite3Plugin(RobotPlugin):
     def lidar_address(self) -> Optional[str]:
         """The LiDAR's address as this plugin's own config gives it, or None.
 
-        ``None`` is not "no LiDAR": a RoboSense is never addressed by the host,
-        it streams to whoever listens on its port, so its config names no
-        address at all. Only a Livox config carries one.
+        Only a Livox config carries one.
         """
         return _configured_lidar_ip(self.lidar.config)
 
