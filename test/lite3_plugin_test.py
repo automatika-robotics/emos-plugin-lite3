@@ -16,8 +16,10 @@ import io
 import os
 import socket
 import sys
+import threading
 import time
 
+import attrs
 import pytest
 
 # Make `lite3_plugin` and `server_node` importable when run from the repo root.
@@ -39,6 +41,7 @@ from ros_sugar.robot import (  # noqa: E402
 from lite3_plugin import codecs, protocol  # noqa: E402
 from lite3_plugin.protocol import CommandCode  # noqa: E402
 from lite3_plugin import Lite3Plugin  # noqa: E402
+from lite3_plugin import plugin as _plugin_module  # noqa: E402
 from lite3_plugin.plugin import _rgbd_type  # noqa: E402
 from server_node import MockLite3  # noqa: E402
 
@@ -50,6 +53,11 @@ class _Lite3PluginForTest(Lite3Plugin):
     ``super().__init__()``) so the production ``Lite3Plugin`` constructor reads
     them in place of the class defaults — the recommended override pattern.
     """
+
+    #: Pinned rather than detected: what LiDAR is on the machine running the
+    #: tests is not the subject of most of them. The detection itself has its
+    #: own tests below.
+    LIDAR_KIND = "livox"
 
     def __init__(self, *, command_port: int, telemetry_port: int):
         self.MOTION_HOST_IP = "127.0.0.1"
@@ -318,7 +326,7 @@ def test_required_processes_gated_on_requested():
     plugin._set_requested(frozenset({"lidar"}), frozenset())
     specs = plugin.required_processes()
     assert [s.package for s in specs] == ["livox_ros_driver2"]
-    assert specs[0].parameters[0]["user_config_path"] == plugin.LIDAR_CONFIG
+    assert specs[0].parameters[0]["user_config_path"] == plugin.lidar.config
 
     # A colour-only camera bind starts RealSense without depth / RGBD.
     plugin._set_requested(frozenset({"camera"}), frozenset())
@@ -596,10 +604,10 @@ def test_lidar_mount_places_the_cloud_on_the_body():
 
     plugin = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
     mounts = {m.child_frame: m for m in plugin.mounts}
-    lidar = mounts[plugin.LIDAR_FRAME]
+    lidar = mounts[plugin.lidar.frame]
     assert lidar.parent_frame == "body"
-    assert tuple(lidar.xyz) == plugin.LIDAR_MOUNT[0]
-    assert tuple(lidar.rpy) == plugin.LIDAR_MOUNT[1]
+    assert tuple(lidar.xyz) == plugin.lidar.mount[0]
+    assert tuple(lidar.rpy) == plugin.lidar.mount[1]
     # 187 mm forward, 129 mm up, pitched 15 degrees nose-down
     assert tuple(lidar.xyz) == pytest.approx((0.187, 0.0, 0.129))
     assert math.degrees(lidar.rpy[1]) == pytest.approx(15.0)
@@ -611,7 +619,7 @@ def test_no_lidar_mount_without_a_lidar():
         HAS_LIDAR = False
 
     plugin = NoLidar(command_port=_free_port(), telemetry_port=_free_port())
-    assert plugin.LIDAR_FRAME not in {m.child_frame for m in plugin.mounts}
+    assert plugin.lidar.frame not in {m.child_frame for m in plugin.mounts}
 
 
 def test_packaged_lidar_config_carries_the_lite3_addresses():
@@ -619,7 +627,7 @@ def test_packaged_lidar_config_carries_the_lite3_addresses():
     cloud and the Mid-360 IMU share one frame for mapping."""
     import json
 
-    with open(Lite3Plugin.LIDAR_CONFIG) as f:
+    with open(Lite3Plugin.LIDARS["livox"].config) as f:
         config = json.load(f)
     host = config["MID360"]["host_net_info"]
     assert {host[k] for k in ("cmd_data_ip", "push_msg_ip", "point_data_ip", "imu_data_ip")} == {
@@ -628,6 +636,190 @@ def test_packaged_lidar_config_carries_the_lite3_addresses():
     (lidar,) = config["lidar_configs"]
     assert lidar["ip"] == "192.168.1.201"
     assert not any(lidar["extrinsic_parameter"].values())
+
+
+def _with_robosense_ports(*ports: int) -> dict:
+    """The plugin's LiDARs, with the RoboSense listening on scratch ports.
+
+    Detection binds the real MSOP port, which a test may neither assume free
+    nor squat on, so only that field is evolved and the rest of the spec is
+    the plugin's own.
+    """
+    return {
+        **Lite3Plugin.LIDARS,
+        "robosense": attrs.evolve(Lite3Plugin.LIDARS["robosense"], host_ports=ports),
+    }
+
+
+@pytest.fixture(autouse=True)
+def _pin_lidar_kind(monkeypatch):
+    """Keep detection out of tests that are not about it.
+
+    Detection asks the network of whatever machine runs the suite, which has no
+    Lite3 on it. The tests below that *are* about detection opt back in by
+    declaring their own kind.
+    """
+    monkeypatch.setattr(Lite3Plugin, "LIDAR_KIND", "livox")
+
+
+class _AutoDetectLite3(_Lite3PluginForTest):
+    """A unit whose LiDAR is worked out on startup, as a shipped plugin does."""
+
+    LIDAR_KIND = "auto"
+    LIDAR_DETECT_SECONDS = 0.5
+    # No Livox address to fall back on, so detection rests on the listen alone
+    LIDARS = {**Lite3Plugin.LIDARS,
+              "livox": attrs.evolve(Lite3Plugin.LIDARS["livox"], config=None)}
+
+
+def _stream_robosense_packets(port: int, stop: threading.Event) -> None:
+    """A RoboSense's own behaviour: point packets, unasked, until stopped."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    packet = b"\x55\xaa\x05\x0a" + bytes(1244)
+    while not stop.is_set():
+        sock.sendto(packet, ("127.0.0.1", port))
+        time.sleep(0.005)
+    sock.close()
+
+
+def test_detection_finds_the_robosense_that_is_streaming():
+    """The one question the hardware answers by itself: a RoboSense streams
+    point packets as soon as it has power, and nothing else does."""
+    port = _free_port()
+    stop = threading.Event()
+    sender = threading.Thread(
+        target=_stream_robosense_packets, args=(port, stop), daemon=True
+    )
+    sender.start()
+    try:
+
+        class Detected(_AutoDetectLite3):
+            LIDARS = _with_robosense_ports(port, _free_port())
+
+        plugin = Detected(command_port=_free_port(), telemetry_port=_free_port())
+    finally:
+        stop.set()
+    assert plugin.LIDAR_KIND == "robosense"
+    assert plugin.lidar.topic == "/rslidar_points"
+    assert "lidar_imu" not in plugin.feedbacks
+
+
+def test_a_held_robosense_port_means_its_driver_is_already_running():
+    """Not being able to listen is itself the answer: on this robot only a
+    RoboSense driver binds that port."""
+    port = _free_port()
+    holder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    holder.bind(("", port))
+    try:
+
+        class Detected(_AutoDetectLite3):
+            LIDARS = _with_robosense_ports(port, _free_port())
+
+        plugin = Detected(command_port=_free_port(), telemetry_port=_free_port())
+    finally:
+        holder.close()
+    assert plugin.LIDAR_KIND == "robosense"
+
+
+def test_detection_settles_on_the_mid360_when_nothing_streams():
+    """A Mid-360 says nothing until a host configures it, so silence plus no
+    other maker's hardware is what a Livox unit looks like."""
+
+    class Detected(_AutoDetectLite3):
+        LIDARS = _with_robosense_ports(_free_port(), _free_port())
+
+    plugin = Detected(command_port=_free_port(), telemetry_port=_free_port())
+    assert plugin.LIDAR_KIND == "livox"
+    assert plugin.lidar.topic == "/livox/lidar"
+    assert "lidar_imu" in plugin.feedbacks
+
+
+def test_detection_is_not_run_on_a_unit_with_no_lidar():
+    """Nothing to detect, and no reason to make every startup wait for it."""
+
+    class NoLidar(_AutoDetectLite3):
+        HAS_LIDAR = False
+        LIDARS = _with_robosense_ports(_free_port(), _free_port())
+
+    started = time.monotonic()
+    plugin = NoLidar(command_port=_free_port(), telemetry_port=_free_port())
+    assert plugin.LIDAR_KIND == "livox"
+    assert time.monotonic() - started < NoLidar.LIDAR_DETECT_SECONDS
+
+
+class _RoboSenseLite3(_Lite3PluginForTest):
+    """A unit fitted with the RoboSense instead of the Mid-360."""
+
+    LIDAR_KIND = "robosense"
+
+
+def test_robosense_unit_uses_its_own_driver_topic_and_geometry():
+    """DeepRobotics fits either LiDAR at the same address, so the plugin has to
+    be told which, and everything downstream follows from that one attribute.
+
+    The numbers are the vendor's own, from the extrinsic_T their faster_lio
+    configuration carries on these units.
+    """
+    plugin = _RoboSenseLite3(command_port=_free_port(), telemetry_port=_free_port())
+    assert plugin.lidar.topic == "/rslidar_points"
+    assert plugin.lidar.frame == "rslidar"
+    assert plugin.lidar.driver_package == "rslidar_sdk"
+    assert plugin.lidar.host_ports == (6699, 7788)
+    mounts = {m.child_frame: m for m in plugin.mounts}
+    assert tuple(mounts["rslidar"].xyz) == pytest.approx((0.12815, 0.0, 0.10596))
+    assert tuple(mounts["rslidar"].rpy) == (0.0, 0.0, 0.0)
+    # The Mid-360's frame belongs to a Mid-360 unit, and never both at once
+    assert "livox_frame" not in mounts
+
+
+def test_robosense_unit_serves_no_lidar_imu():
+    """A RoboSense has no IMU, so that feedback is absent rather than silent --
+    and mapping must not ask for one it cannot get."""
+    plugin = _RoboSenseLite3(command_port=_free_port(), telemetry_port=_free_port())
+    assert "lidar" in plugin.feedbacks
+    assert "lidar_imu" not in plugin.feedbacks
+    assert plugin.lidar.feedbacks == frozenset({"lidar"})
+    assert plugin.MAPPING.cloud == "lidar"
+    assert plugin.MAPPING.imu is None and plugin.MAPPING.imu_xyz is None
+    # A unit that does have one still declares it. The class attribute carries
+    # neither: which IMU to fuse is a property of the LiDAR that is fitted.
+    mid360 = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
+    assert mid360.MAPPING.imu == "lidar_imu"
+    assert mid360.MAPPING.imu_xyz == pytest.approx((0.011, 0.02329, -0.04412))
+    assert Lite3Plugin.MAPPING.imu is None
+
+
+def test_robosense_driver_is_left_to_the_robot_when_not_installed():
+    """rslidar_sdk is not a released ROS package, so an EMOS environment
+    usually lacks it while the robot always has it. That must not abort the
+    launch: the plugin reads the cloud the robot's own driver publishes."""
+    plugin = _RoboSenseLite3(command_port=_free_port(), telemetry_port=_free_port())
+    plugin._set_requested(frozenset({"lidar"}), frozenset())
+    packages = [p.package for p in plugin.required_processes()]
+    if _plugin_module._package_available("rslidar_sdk"):
+        assert packages == ["rslidar_sdk"]
+    else:
+        assert packages == []
+
+
+def test_an_unknown_lidar_kind_is_refused():
+    class Mystery(_Lite3PluginForTest):
+        LIDAR_KIND = "hokuyo"
+
+    with pytest.raises(ValueError, match="LIDAR_KIND"):
+        Mystery(command_port=_free_port(), telemetry_port=_free_port())
+
+
+def test_a_lidar_address_is_identified_by_its_hardware_vendor():
+    """The wrong driver on the right address is silent, so the plugin says so
+    first. 40:2c:76:8* is Suteng Innovation (RoboSense) in the IEEE registry,
+    and a Lite3 carries either that or a Mid-360, which is in no registry."""
+    assert _plugin_module._is_robosense_mac("40:2c:76:82:1a:23")
+    assert _plugin_module._is_robosense_mac("40-2C-76-82-1A-23")
+    # A neighbouring MA-M assignment is a different company, not a RoboSense
+    assert not _plugin_module._is_robosense_mac("40:2c:76:12:34:56")
+    # The Jetson's own NIC, which shares the subnet with the LiDAR
+    assert not _plugin_module._is_robosense_mac("3c:6d:66:4d:b1:2f")
 
 
 def test_native_mapping_names_sensors_this_plugin_serves():
@@ -641,7 +833,7 @@ def test_native_mapping_names_sensors_this_plugin_serves():
     assert mapping.kind == "native"
     # Named by feedback key, and both are served by the one Livox driver
     assert {mapping.cloud, mapping.imu} <= set(plugin.feedbacks)
-    assert {mapping.cloud, mapping.imu} == set(plugin.LIDAR_DRIVER_FEEDBACKS)
+    assert {mapping.cloud, mapping.imu} == set(plugin.lidar.feedbacks)
     # The mapping session builds its input topics from these type names
     assert plugin.feedbacks[mapping.cloud].msg_type.__name__ == "PointCloud2"
     assert plugin.feedbacks[mapping.imu].msg_type.__name__ == "Imu"
@@ -651,7 +843,7 @@ def test_native_mapping_names_sensors_this_plugin_serves():
     # Where the ground is: the LiDAR's mount above the body, plus the body
     # above the ground. Both have to be there for the grid to be flattened.
     mounts = {m.child_frame: m for m in plugin.mounts}
-    assert mounts[plugin.LIDAR_FRAME].xyz[2] > 0
+    assert mounts[plugin.lidar.frame].xyz[2] > 0
     assert plugin.base_height and plugin.base_height > 0
     # Obstacles are taken from a band no taller than the robot
     assert 0 < mapping.z_min < mapping.z_max <= plugin.robot_config.height
@@ -776,8 +968,8 @@ def test_lidar_driver_starts_for_the_imu_alone():
     either has to start it. Gating on the cloud alone leaves a recipe that
     wants only the IMU with a silent topic and no clue why."""
     plugin = Lite3Plugin()
-    assert plugin.LIDAR_DRIVER_PACKAGE in _packages(plugin, {"lidar_imu"})
-    assert plugin.LIDAR_DRIVER_PACKAGE in _packages(plugin, {"lidar"})
+    assert plugin.lidar.driver_package in _packages(plugin, {"lidar_imu"})
+    assert plugin.lidar.driver_package in _packages(plugin, {"lidar"})
 
 
 def test_no_drivers_when_nothing_is_bound():

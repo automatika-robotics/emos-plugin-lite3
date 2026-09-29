@@ -35,11 +35,15 @@ directly, so no separate bridge process is needed.
 """
 
 import importlib.util
+import json
+import os
 import socket
+import subprocess
 import threading
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, FrozenSet, Optional, Tuple
 
+import attrs
 import numpy as np
 from geometry_msgs.msg import Twist as RosTwist
 from nav_msgs.msg import Odometry as RosOdometry
@@ -265,6 +269,124 @@ def _decode_handle(raw: bytes) -> Optional[RosTwist]:
     return msg
 
 
+#: Ethernet vendor prefix of the RoboSense, from the IEEE registry.
+#:
+#: DeepRobotics fits a Lite3 with this or a Livox Mid-360, and Livox
+#: holds no registry block under its own name, so one prefix separates the two:
+#: a LiDAR address that matches is the RoboSense, and one that answers without
+#: matching is the Mid-360.
+_ROBOSENSE_MAC_PREFIX = "402c768"  # Suteng Innovation Technology Co., Ltd.
+
+
+def _mac_of(ip: str) -> Optional[str]:
+    """The hardware address the kernel has for an IP, or ``None``.
+
+    Read from the neighbour table, which the network stack fills in as soon as
+    anything talks to the address, so this asks the operator for nothing. A
+    ping first, in case nothing has yet.
+    """
+
+    def lookup() -> Optional[str]:
+        try:
+            with open("/proc/net/arp") as f:
+                rows = f.read().splitlines()[1:]
+        except OSError:
+            return None
+        for row in rows:
+            fields = row.split()
+            if (
+                len(fields) >= 4
+                and fields[0] == ip
+                and fields[3] != "00:00:00:00:00:00"
+            ):
+                return fields[3].lower()
+        return None
+
+    found = lookup()
+    if found is not None:
+        return found
+    try:
+        subprocess.run(
+            ["ping", "-c", "1", "-W", "1", ip],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return lookup()
+
+
+def _robosense_is_streaming(port: int, timeout: float) -> Optional[bool]:
+    """Whether a RoboSense LiDAR is sending point packets to this machine.
+
+    A mechanical RoboSense streams MSOP packets as soon as it has power, to a
+    broadcast address unless told otherwise, so listening is enough to identify
+    one -- nothing is sent and nothing is asked of the operator. A Livox is the
+    opposite: it stays silent until a host configures it, which is why
+    detection can prove a RoboSense but only infer a Livox.
+
+    ``None`` means the question could not be answered: the port is already
+    taken, which on this robot means a RoboSense driver is running and holding
+    it -- itself an answer, left to the caller to read.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    try:
+        sock.bind(("", port))
+    except OSError:
+        sock.close()
+        return None
+    sock.settimeout(timeout)
+    try:
+        # Point packets are ~1.2 kB; nothing else on this port is that size
+        packet, _ = sock.recvfrom(2048)
+        return len(packet) >= 1000
+    except (socket.timeout, OSError):
+        return False
+    finally:
+        sock.close()
+
+
+def _package_available(package: str) -> bool:
+    """Whether a ROS package is in this environment.
+
+    Asked before declaring a process for it: a package that is not there aborts
+    the whole launch, which is the wrong answer for a driver the robot can
+    supply itself.
+    """
+    try:
+        from ament_index_python.packages import get_package_prefix
+
+        get_package_prefix(package)
+        return True
+    except Exception:
+        return False
+
+
+def _configured_lidar_ip(path: Optional[str]) -> Optional[str]:
+    """The LiDAR address a driver config names, or ``None`` when it names none.
+
+    Only a Livox config carries one; a RoboSense is never addressed by the
+    host, it streams to whoever listens on its port.
+    """
+    if not path or not os.path.isfile(path) or not path.endswith(".json"):
+        return None
+    try:
+        with open(path) as f:
+            lidars = json.load(f).get("lidar_configs") or []
+        return str(lidars[0]["ip"]) if lidars else None
+    except (OSError, ValueError, KeyError, IndexError):
+        return None
+
+
+def _is_robosense_mac(mac: str) -> bool:
+    """Whether a hardware address belongs to RoboSense."""
+    flat = mac.replace(":", "").replace("-", "").lower()
+    return flat.startswith(_ROBOSENSE_MAC_PREFIX)
+
+
 def _packaged_config(filename: str) -> Optional[str]:
     """Absolute path to a config file shipped with this package, or ``None``.
 
@@ -304,6 +426,41 @@ def _rgbd_type():
             " Install EMOS (which includes it) or embodied-agents."
         ) from e
     return RGBD
+
+
+@attrs.define(frozen=True, kw_only=True)
+class LidarSpec:
+    """Everything that differs between the LiDARs a Lite3 can be fitted with.
+    """
+
+    #: What to call it in a log line or a feedback description
+    name: str
+    driver_package: str
+    driver_executable: str
+    #: The driver's own configuration file, or None when it has none
+    config: Optional[str]
+    #: Topic the driver publishes the cloud on, and the frame it is in
+    topic: str
+    frame: str
+    #: Where it sits on the body, as (xyz, rpy) relative to ``base_frame``
+    mount: Tuple[Tuple[float, float, float], Tuple[float, float, float]]
+    #: Host UDP ports it streams to, checked free before the driver starts
+    host_ports: Tuple[int, ...]
+    #: Topic for an IMU inside the unit; None for a LiDAR that has none
+    imu_topic: Optional[str] = None
+    #: That IMU's position in the LiDAR's frame, for LiDAR-inertial mapping
+    imu_xyz: Optional[Tuple[float, float, float]] = None
+
+    @property
+    def imu_feedback(self) -> Optional[str]:
+        """Feedback key of the IMU beside this LiDAR, if it has one."""
+        return "lidar_imu" if self.imu_topic else None
+
+    @property
+    def feedbacks(self) -> FrozenSet[str]:
+        """Every feedback this LiDAR's one driver process serves. Any of them
+        being bound is reason to start it."""
+        return frozenset({"lidar"} | ({self.imu_feedback} if self.imu_topic else set()))
 
 
 class Lite3Plugin(RobotPlugin):
@@ -399,45 +556,65 @@ class Lite3Plugin(RobotPlugin):
     #: sets ``Launcher.world_frame``).
     EKF_WORLD_FRAME = "map"
 
-    # --- Livox Mid-360 LiDAR (driver started by required_processes) ----------
-    #: Expose the Mid-360 point cloud, and start livox_ros_driver2 for a recipe
-    #: that binds it. Set False on a unit with no LiDAR.
+    # --- LiDAR (driver started by required_processes) -------------------------
     HAS_LIDAR = True
-    LIDAR_DRIVER_PACKAGE = "livox_ros_driver2"
-    LIDAR_DRIVER_EXECUTABLE = "livox_ros_driver2_node"
-    #: Livox ``user_config`` JSON (host + lidar IPs and ports). The packaged default
-    #: carries the Lite3's addresses. Its extrinsics are zero, so the cloud and the
-    #: Mid-360's IMU share ``LIDAR_FRAME``.
-    LIDAR_CONFIG: Optional[str] = _packaged_config("mid360_config.json")
-    #: How this robot's environment gets mapped. DeepRobotics ships no mapping
-    #: tool on the Lite3, so EMOS builds the map itself from the Mid-360's own
-    MAPPING = NativeMapping(
-        cloud="lidar",
-        imu="lidar_imu",
-        z_max=0.40,
-        imu_xyz=(0.011, 0.02329, -0.04412),
-    )
 
-    #: Topic the driver publishes the cloud on, and the frame it is expressed in.
-    LIDAR_TOPIC = "/livox/lidar"
-    LIDAR_FRAME = "livox_frame"
-    #: Where the Mid-360 sits on the body, as (xyz, rpy) relative to
-    #: ``base_frame``: forward of centre, on top of the trunk, pitched down.
-    #: Published as the static transform ``body -> LIDAR_FRAME``.
-    LIDAR_MOUNT = ((0.187, 0.0, 0.129), (0.0, float(np.deg2rad(15.0)), 0.0))
-    #: Topic the driver publishes the Mid-360's built-in IMU on. Separate from
-    #: the ``Imu`` feedback, which is the robot's own body IMU decoded from
-    #: telemetry at 10 Hz.
-    LIDAR_IMU_TOPIC = "/livox/imu"
-    #: Livox transfer format (0 = ``sensor_msgs/PointCloud2``) and publish Hz.
-    LIDAR_XFER_FORMAT = 0
-    LIDAR_PUBLISH_FREQ = 10.0
-    #: Every feedback the one livox_ros_driver2 process serves. Any of them
-    #: being bound is reason to start it.
-    LIDAR_DRIVER_FEEDBACKS = frozenset({"lidar", "lidar_imu"})
-    #: Host UDP ports the Mid-360 streams to. Checked free before the driver is
-    #: started. Keep in step with the ports in ``LIDAR_CONFIG``.
-    LIDAR_HOST_PORTS = (56101, 56201, 56301, 56401)
+    #: Which LiDAR this unit carries.
+    #: ``"auto"`` asks the robot on startup (see ``_detect_lidar_kind``),
+    #   Pin it to ``"livox"`` or ``"robosense"`` on a unit you know, to skip the probe.
+    LIDAR_KIND = "auto"
+
+    #: How long detection listens for a RoboSense before concluding there is
+    #: none.
+    LIDAR_DETECT_SECONDS = 0.3
+
+    #: The LiDARs this robot comes with, keyed by ``LIDAR_KIND``. The fitted
+    #: one becomes ``self.lidar``, which everything downstream reads.
+    LIDARS = {
+        "livox": LidarSpec(
+            name="Livox Mid-360",
+            driver_package="livox_ros_driver2",
+            driver_executable="livox_ros_driver2_node",
+            # user_config JSON: host and lidar IPs and ports
+            config=_packaged_config("mid360_config.json"),
+            topic="/livox/lidar",
+            frame="livox_frame",
+            # DeepRobotics' own extrinsic_parameter: 187 mm forward, 129 mm up,
+            # pitched 15 deg. Their config applies it per point; ours leaves it
+            # zero, so this mount is where it is applied instead.
+            mount=((0.187, 0.0, 0.129), (0.0, float(np.deg2rad(15.0)), 0.0)),
+            host_ports=(56101, 56201, 56301, 56401),
+            imu_topic="/livox/imu",
+            # The IMU inside the unit, 11.0 / 23.29 / -44.12 mm from the
+            # LiDAR's origin (Livox Mid-360 user manual). The driver stamps
+            # both streams with one frame, so nothing else carries it.
+            imu_xyz=(0.011, 0.02329, -0.04412),
+        ),
+        "robosense": LidarSpec(
+            name="RoboSense",
+            driver_package="rslidar_sdk",
+            driver_executable="rslidar_sdk_node",
+            config=_packaged_config("rslidar_config.yaml"),
+            topic="/rslidar_points",
+            frame="rslidar",
+            # DeepRobotics' own extrinsic_T from the faster_lio config these
+            # units run: 128.15 mm forward, 105.96 mm up, identity rotation.
+            mount=((0.12815, 0.0, 0.10596), (0.0, 0.0, 0.0)),
+            # MSOP, then DIFOP
+            host_ports=(6699, 7788),
+            # No IMU of its own: no lidar_imu feedback, and nothing for mapping
+            # to fuse.
+        ),
+    }
+
+    #: Livox driver parameters with no RoboSense equivalent: transfer format
+    #: (0 = ``sensor_msgs/PointCloud2``) and publish Hz.
+    LIVOX_XFER_FORMAT = 0
+    LIVOX_PUBLISH_FREQ = 10.0
+
+    #: How this robot's environment gets mapped. Which IMU to fuse and where it
+    #: sits come from the fitted LiDAR, since only one of them has one.
+    MAPPING = NativeMapping(cloud="lidar", z_max=0.40)
 
     # --- Intel RealSense camera (driver started by required_processes) -------
     #: Expose the RealSense streams, and start realsense2_camera for a recipe
@@ -486,6 +663,10 @@ class Lite3Plugin(RobotPlugin):
         self._returned_to_manual = False
         self._manual_lock = threading.Lock()
 
+        # Which LiDAR this unit carries, before anything reads its topic,
+        # frame, mount or driver
+        self._apply_lidar_kind()
+
         # The frame rigidly attached to the robot's body
         self.base_frame = "body"
         # Static transforms body -> sensor frames, published by the launcher
@@ -494,8 +675,10 @@ class Lite3Plugin(RobotPlugin):
             for frame, (xyz, rpy) in self.SENSOR_MOUNTS.items()
         ]
         if self.HAS_LIDAR:
-            xyz, rpy = self.LIDAR_MOUNT
-            self.mounts.append(Mount(parent=self, child=self.LIDAR_FRAME, xyz=xyz, rpy=rpy))
+            xyz, rpy = self.lidar.mount
+            self.mounts.append(
+                Mount(parent=self, child=self.lidar.frame, xyz=xyz, rpy=rpy)
+            )
         xyz, rpy = self.IMU_MOUNT
         self.mounts.append(Mount(parent=self, child=_IMU_FRAME, xyz=xyz, rpy=rpy))
 
@@ -1019,20 +1202,24 @@ class Lite3Plugin(RobotPlugin):
         )
 
     def _add_ros_sensors(self) -> None:
-        """Register the Livox and RealSense feedbacks the plugin exposes."""
+        """Register the LiDAR and RealSense feedbacks the plugin exposes."""
         if self.HAS_LIDAR:
             self._add_ros_sensor(
                 "lidar",
-                self.LIDAR_TOPIC,
+                self.lidar.topic,
                 PointCloud2,
-                "Livox Mid-360 point cloud (from livox_ros_driver2)",
+                f"{self.lidar.name} point cloud (from {self.lidar.driver_package})",
             )
-            self._add_ros_sensor(
-                "lidar_imu",
-                self.LIDAR_IMU_TOPIC,
-                Imu,
-                "Livox Mid-360 built-in IMU, for LiDAR-inertial odometry",
-            )
+            # Only the Mid-360 carries an IMU; a RoboSense unit serves the
+            # cloud alone, so the feedback does not exist rather than existing
+            # and staying silent.
+            if self.lidar.imu_topic:
+                self._add_ros_sensor(
+                    "lidar_imu",
+                    self.lidar.imu_topic,
+                    Imu,
+                    "Livox Mid-360 built-in IMU, for LiDAR-inertial odometry",
+                )
         if self.HAS_CAMERA:
             # A directly-launched realsense2_camera node publishes its streams
             # under the node name, so derive /<node>/<stream> unless overridden.
@@ -1082,33 +1269,19 @@ class Lite3Plugin(RobotPlugin):
         processes = []
         requested = self.requested_feedbacks
 
-        if self.HAS_LIDAR and self.LIDAR_DRIVER_FEEDBACKS & requested:
-            if self.LIDAR_CONFIG:
-                processes.append(
-                    ProcessSpec(
-                        package=self.LIDAR_DRIVER_PACKAGE,
-                        executable=self.LIDAR_DRIVER_EXECUTABLE,
-                        name="lite3_livox",
-                        parameters=[
-                            {
-                                "xfer_format": self.LIDAR_XFER_FORMAT,
-                                "multi_topic": 0,
-                                "publish_freq": self.LIDAR_PUBLISH_FREQ,
-                                "frame_id": self.LIDAR_FRAME,
-                                "user_config_path": self.LIDAR_CONFIG,
-                            }
-                        ],
-                        precondition=self._lidar_ports_are_free,
-                    )
-                )
-            else:
-                get_logger(self.metadata.name).warning(
-                    "Recipe binds a Mid-360 feedback but no Livox config was "
-                    "found. The "
-                    "packaged config/mid360_config.json is missing -- build the "
-                    "package, or set LIDAR_CONFIG to a Mid-360 user_config JSON "
-                    "whose IPs match this robot. Not starting the LiDAR driver."
-                )
+        if self.HAS_LIDAR and self.lidar.feedbacks & requested:
+            # Said before the driver starts, because the failure it describes
+            # is otherwise silent: the node runs and publishes nothing.
+            mismatch = self._lidar_vendor_warning()
+            if mismatch:
+                get_logger(self.metadata.name).error(mismatch)
+            lidar_process = (
+                self._livox_process()
+                if self.LIDAR_KIND == "livox"
+                else self._robosense_process()
+            )
+            if lidar_process is not None:
+                processes.append(lidar_process)
 
         if self.HAS_CAMERA and {"camera", "camera_info", "rgbd"} & requested:
             want_rgbd = "rgbd" in requested
@@ -1145,6 +1318,66 @@ class Lite3Plugin(RobotPlugin):
                 )
         return processes
 
+    def _livox_process(self) -> Optional[ProcessSpec]:
+        """The livox_ros_driver2 node for a Mid-360, or None without a config."""
+        if not self.lidar.config:
+            get_logger(self.metadata.name).warning(
+                "Recipe binds a Mid-360 feedback but no Livox config was "
+                "found. The "
+                "packaged config/mid360_config.json is missing -- build the "
+                "package, or set its config to a Mid-360 user_config JSON "
+                "whose IPs match this robot. Not starting the LiDAR driver."
+            )
+            return None
+        return ProcessSpec(
+            package=self.lidar.driver_package,
+            executable=self.lidar.driver_executable,
+            name="lite3_livox",
+            parameters=[
+                {
+                    "xfer_format": self.LIVOX_XFER_FORMAT,
+                    "multi_topic": 0,
+                    "publish_freq": self.LIVOX_PUBLISH_FREQ,
+                    "frame_id": self.lidar.frame,
+                    "user_config_path": self.lidar.config,
+                }
+            ],
+            precondition=self._lidar_ports_are_free,
+        )
+
+    def _robosense_process(self) -> Optional[ProcessSpec]:
+        """The rslidar_sdk node for a RoboSense, or None to use the robot's own.
+
+        RoboSense's driver is not a released ROS package, so an EMOS
+        environment will usually not have it while the robot itself always
+        does. Rather than fail, the plugin then reads the cloud the robot's own
+        driver publishes -- the same topic either way.
+        """
+        if not _package_available(self.lidar.driver_package):
+            get_logger(self.metadata.name).warning(
+                f"This unit's LiDAR is a RoboSense, whose driver "
+                f"'{self.lidar.driver_package}' is not installed in this "
+                f"environment, so the plugin will not start it. Start the "
+                f"robot's own driver instead -- "
+                f"~/lite_cog_ros2/system/scripts/lidar/start_rslidar.sh -- and "
+                f"this plugin reads its '{self.lidar.topic}'."
+            )
+            return None
+        if not self.lidar.config:
+            get_logger(self.metadata.name).warning(
+                "Recipe binds the LiDAR but no RoboSense config was found. The "
+                "packaged config/rslidar_config.yaml is missing -- build the "
+                "package, or set its config. Not starting the driver."
+            )
+            return None
+        return ProcessSpec(
+            package=self.lidar.driver_package,
+            executable=self.lidar.driver_executable,
+            name="lite3_rslidar",
+            parameters=[{"config_path": self.lidar.config}],
+            precondition=self._lidar_ports_are_free,
+        )
+
     def _ekf_process(self) -> ProcessSpec:
         """The robot_localization EKF fusing the leg odometry and body IMU."""
         return ProcessSpec(
@@ -1174,24 +1407,130 @@ class Lite3Plugin(RobotPlugin):
         )
 
     def _lidar_ports_are_free(self) -> bool:
-        """True when no process already holds the Mid-360's host UDP ports.
+        """True when no process already holds the LiDAR's host UDP ports.
 
         Checked before starting so that reads as a port conflict rather than a crash.
         """
-        for port in self.LIDAR_HOST_PORTS:
+        for port in self.lidar.host_ports:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
                 sock.bind(("", port))
             except OSError:
                 get_logger(self.metadata.name).warning(
-                    f"UDP {port} is already bound, so the Livox driver will NOT "
-                    "be started -- a second binder receives nothing. A Mid-360 "
-                    "driver is likely already running."
+                    f"UDP {port} is already bound, so the LiDAR driver will NOT "
+                    "be started -- a second binder receives nothing. A driver "
+                    "for this LiDAR is likely already running."
                 )
                 return False
             finally:
                 sock.close()
         return True
+
+    # -- which LiDAR this unit carries ---------------------------------------
+    def _apply_lidar_kind(self) -> None:
+        """Point the LiDAR settings at the fitted unit's driver and geometry.
+
+        The class attributes describe the Mid-360, so ``"livox"`` is a no-op
+        and ``"robosense"`` overrides them on the instance. A RoboSense has no
+        IMU of its own, so it serves one feedback rather than two, and mapping
+        has no LiDAR-rate IMU to fuse.
+        """
+        if self.LIDAR_KIND == "auto":
+            self.LIDAR_KIND = self._detect_lidar_kind() if self.HAS_LIDAR else "livox"
+        if self.LIDAR_KIND not in self.LIDARS:
+            raise ValueError(
+                f"LIDAR_KIND must be 'auto' or one of {sorted(self.LIDARS)}, "
+                f"not {self.LIDAR_KIND!r}"
+            )
+        self.lidar: LidarSpec = self.LIDARS[self.LIDAR_KIND]
+        # A LiDAR with no IMU of its own leaves mapping nothing to fuse: the
+        # body IMU decoded from telemetry is far too slow for that.
+        self.MAPPING = attrs.evolve(
+            self.MAPPING, imu=self.lidar.imu_feedback, imu_xyz=self.lidar.imu_xyz
+        )
+
+    def _detect_lidar_kind(self) -> str:
+        """Which LiDAR this unit is fitted with, asked of the robot itself.
+
+        DeepRobotics ships the Lite3 with either make and puts both at the same
+        address, so the address cannot answer this and the two drivers cannot
+        be told apart by trying one: the wrong one starts and simply publishes
+        nothing. Two questions the hardware can answer settle it, in order of
+        certainty:
+
+        1. Is a RoboSense streaming point packets at us? Only a RoboSense does
+           that unbidden. Its driver already holding the port counts too.
+        2. Who made whatever holds the LiDAR's address? RoboSense is in the
+           IEEE registry and Livox is not, so a device that answers without
+           matching RoboSense is the Mid-360.
+
+        Falls back to Livox, saying so, when the robot answers neither -- which
+        is what a unit with its LiDAR unplugged looks like.
+        """
+        log = get_logger(self.metadata.name)
+        # Read from the specs rather than self.lidar, which is what this
+        # decides: the MSOP port a RoboSense would stream to, and the address a
+        # Mid-360 would answer at.
+        msop = self.LIDARS["robosense"].host_ports[0]
+        streaming = _robosense_is_streaming(msop, self.LIDAR_DETECT_SECONDS)
+        if streaming:
+            log.info(f"LiDAR detected: RoboSense, streaming to UDP {msop}")
+            return "robosense"
+        if streaming is None:
+            log.info(
+                f"LiDAR detected: RoboSense -- UDP {msop} is already held, "
+                f"which on this robot means its driver is running"
+            )
+            return "robosense"
+
+        ip = _configured_lidar_ip(self.LIDARS["livox"].config)
+        mac = _mac_of(ip) if ip else None
+        if mac is not None:
+            kind = "robosense" if _is_robosense_mac(mac) else "livox"
+            log.info(f"LiDAR detected: {self.LIDARS[kind].name} at {ip} ({mac})")
+            return kind
+        log.warning(
+            f"No LiDAR answered: nothing is streaming to UDP {msop} and nothing "
+            f"holds {ip or 'the configured address'}. Assuming a Mid-360; set "
+            "LIDAR_KIND if this unit has another, or HAS_LIDAR = False if it "
+            "has none."
+        )
+        return "livox"
+
+    def _lidar_vendor_warning(self) -> Optional[str]:
+        """What the device at the configured LiDAR address turns out to be,
+        when that contradicts ``LIDAR_KIND``.
+
+        Two LiDAR makes answer at the same address on these robots and only
+        their protocol tells them apart, so the wrong driver starts, publishes
+        nothing, and looks like a dead sensor. The address's hardware vendor
+        settles it in one lookup, without asking anyone to run anything.
+        """
+        ip = self.lidar_address()
+        if ip is None:
+            return None
+        mac = _mac_of(ip)
+        if mac is None:
+            return None
+        # Only RoboSense is identifiable this way, so this can contradict a
+        # 'livox' setting but never confirm one.
+        if not _is_robosense_mac(mac) or self.LIDAR_KIND == "robosense":
+            return None
+        return (
+            f"The device at {ip} ({mac}) is "
+            f"{self.LIDARS['robosense'].name} hardware, but this plugin is "
+            f"configured for LIDAR_KIND={self.LIDAR_KIND!r}. The driver will "
+            f"start and receive nothing. Set LIDAR_KIND = 'robosense'."
+        )
+
+    def lidar_address(self) -> Optional[str]:
+        """The LiDAR's address as this plugin's own config gives it, or None.
+
+        ``None`` is not "no LiDAR": a RoboSense is never addressed by the host,
+        it streams to whoever listens on its port, so its config names no
+        address at all. Only a Livox config carries one.
+        """
+        return _configured_lidar_ip(self.lidar.config)
 
 
 __all__ = ["Lite3Plugin"]

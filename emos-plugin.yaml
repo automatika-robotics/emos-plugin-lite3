@@ -1,3 +1,12 @@
 # EMOS plugin manifest.
+sources:
+  - git: https://github.com/RoboSense-LiDAR/rslidar_sdk.git
+    recursive: true
+  - git: https://github.com/RoboSense-LiDAR/rslidar_msg.git
+
 deps:
   ros: [livox_ros_driver2, realsense2_camera, realsense2_camera_msgs, robot_localization]
+  system:
+    # What rslidar_sdk compiles against
+    conda: [pcl, yaml-cpp]
+    apt: [libpcl-dev, libyaml-cpp-dev]

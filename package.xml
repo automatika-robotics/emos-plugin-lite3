@@ -3,7 +3,7 @@
 <package format="3">
   <name>lite3_plugin</name>
   <version>1.0.0</version>
-  <description>Sugarcoat robot plugin for the DeepRobotics Lite3 quadruped</description>
+  <description>EMOS robot plugin for the DeepRobotics Lite3 quadruped</description>
   <maintainer email="contact@automatikarobotics.com">Automatika Robotics</maintainer>
   <license>MIT</license>
 
@@ -20,11 +20,12 @@
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
 
-  <!-- External sensor drivers the plugin starts via required_processes when a
-       recipe binds the LiDAR / camera feedbacks. -->
+  <!-- External sensor drivers the plugin starts via required_processes -->
   <exec_depend>livox_ros_driver2</exec_depend>
+  <exec_depend>rslidar_sdk</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>realsense2_camera_msgs</exec_depend>
+
   <!-- EKF the plugin starts when a recipe binds odometry_filtered. -->
   <exec_depend>robot_localization</exec_depend>
 

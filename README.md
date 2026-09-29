@@ -200,6 +200,29 @@ one of their feedbacks, so a recipe that never reads the point cloud never runs
 `livox_ros_driver2`. The launcher owns the processes: they respawn if they die
 and stop with the recipe.
 
+### Which LiDAR the unit carries
+
+DeepRobotics fits the Lite3 with either a **Livox Mid-360** or a **16-line
+RoboSense**, and puts both at the same address on the robot's network. So the plugin asks the robot, on startup:
+
+1. **Is a RoboSense streaming at us?** One sends point packets as soon as it
+   has power, to a broadcast address unless told otherwise, and nothing else
+   does. Its driver already holding that port counts as the same answer.
+2. **Who made whatever holds the LiDAR's address?** RoboSense is in the IEEE
+   registry (`40:2c:76:8*`) and Livox holds no block under its own name, so a
+   device that answers without matching is the Mid-360.
+
+`LIDAR_KIND = "auto"` (the default) runs that; `"livox"` or `"robosense"` pins
+it and skips the probe on a unit you know.
+
+A RoboSense has no IMU of its own, so on those units `lidar_imu` is not served
+at all — the feedback is absent rather than silent — and mapping runs from the
+cloud alone instead of waiting on an IMU that will never arrive.
+
+Both drivers are installed: `livox_ros_driver2` from the ROS distro, and
+RoboSense's `rslidar_sdk`, which is published nowhere, built from source by the
+[EMOS manifest](emos-plugin.yaml).
+
 ## Filtered odometry
 
 Binding `odometry_filtered` is all a recipe does to navigate on fused odometry:
