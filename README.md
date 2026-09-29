@@ -212,12 +212,15 @@ RoboSense**, and puts both at the same address on the robot's network. So the pl
    registry (`40:2c:76:8*`) and Livox holds no block under its own name, so a
    device that answers without matching is the Mid-360.
 
-`LIDAR_KIND = "auto"` (the default) runs that; `"livox"` or `"robosense"` pins
-it and skips the probe on a unit you know.
+`LIDAR_KIND = "auto"` (the default) runs that. On a unit you know, name it and
+skip the probe, either per recipe or in a subclass:
+
+```python
+plugin = Lite3Plugin(lidar_kind="robosense")
+```
 
 A RoboSense has no IMU of its own, so on those units `lidar_imu` is not served
-at all — the feedback is absent rather than silent — and mapping runs from the
-cloud alone instead of waiting on an IMU that will never arrive.
+at all and mapping runs from the cloud alone.
 
 Both drivers are installed: `livox_ros_driver2` from the ROS distro, and
 RoboSense's `rslidar_sdk`, which is published nowhere, built from source by the

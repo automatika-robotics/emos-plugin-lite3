@@ -466,13 +466,17 @@ class LidarSpec:
 class Lite3Plugin(RobotPlugin):
     """Sugarcoat robot plugin for the DeepRobotics Lite3 quadruped.
 
-    Construction is zero-argument: ``Lite3Plugin()`` — every endpoint and tuning
-    knob is part of the robot's identity, baked into the class. Override via
-    subclass when you need a non-default deployment:
+    Construction takes nothing a recipe has to know: ``Lite3Plugin()`` — every
+    endpoint and tuning knob is part of the robot's identity, baked into the
+    class. Override via subclass when you need a non-default deployment:
 
         class MyLite3(Lite3Plugin):
             MOTION_HOST_IP = "10.0.0.42"     # robot lives on a different subnet
             VEL_X_FACTOR = 0.85              # this unit's forward calibration
+
+    :param lidar_kind: Which LiDAR this unit carries, ``"livox"`` or
+        ``"robosense"``. ``None``, the default, reads ``LIDAR_KIND``, which
+        asks the robot itself. Naming it here skips that probe.
     """
 
     # --- Robot-specific endpoints on the robot's internal LAN ---
@@ -639,7 +643,7 @@ class Lite3Plugin(RobotPlugin):
     SENSOR_QOS_RELIABILITY = ReliabilityPolicy.BEST_EFFORT
     SENSOR_QOS_DEPTH = 5
 
-    def __init__(self):
+    def __init__(self, lidar_kind: Optional[str] = None):
         self.metadata = PluginMetadata(
             name="Lite3",
             vendor="DeepRobotics",
@@ -665,7 +669,7 @@ class Lite3Plugin(RobotPlugin):
 
         # Which LiDAR this unit carries, before anything reads its topic,
         # frame, mount or driver
-        self._apply_lidar_kind()
+        self._apply_lidar_kind(lidar_kind)
 
         # The frame rigidly attached to the robot's body
         self.base_frame = "body"
@@ -1427,7 +1431,7 @@ class Lite3Plugin(RobotPlugin):
         return True
 
     # -- which LiDAR this unit carries ---------------------------------------
-    def _apply_lidar_kind(self) -> None:
+    def _apply_lidar_kind(self, lidar_kind: Optional[str] = None) -> None:
         """Point the LiDAR settings at the fitted unit's driver and geometry.
 
         The class attributes describe the Mid-360, so ``"livox"`` is a no-op
@@ -1435,16 +1439,22 @@ class Lite3Plugin(RobotPlugin):
         IMU of its own, so it serves one feedback rather than two, and mapping
         has no LiDAR-rate IMU to fuse.
         """
-        if self.LIDAR_KIND == "auto":
-            self.LIDAR_KIND = self._detect_lidar_kind() if self.HAS_LIDAR else "livox"
-        if self.LIDAR_KIND not in self.LIDARS:
+        kind = lidar_kind or self.LIDAR_KIND
+        if kind == "auto":
+            kind = self._detect_lidar_kind() if self.HAS_LIDAR else "livox"
+        if kind not in self.LIDARS:
             raise ValueError(
-                f"LIDAR_KIND must be 'auto' or one of {sorted(self.LIDARS)}, "
-                f"not {self.LIDAR_KIND!r}"
+                f"lidar_kind / LIDAR_KIND must be 'auto' or one of "
+                f"{sorted(self.LIDARS)}, not {kind!r}"
             )
-        self.lidar: LidarSpec = self.LIDARS[self.LIDAR_KIND]
-        # A LiDAR with no IMU of its own leaves mapping nothing to fuse: the
-        # body IMU decoded from telemetry is far too slow for that.
+        self.LIDAR_KIND = kind
+        # Detection asks the robot's network, a component subprocess
+        # does not have to do it.
+        init_kwargs = getattr(self, "_init_kwargs", {})
+        if "lidar_kind" in init_kwargs:
+            init_kwargs["lidar_kind"] = kind
+        self.lidar: LidarSpec = self.LIDARS[kind]
+        # Mapping needs a LiDAR with IMU of its own.
         self.MAPPING = attrs.evolve(
             self.MAPPING, imu=self.lidar.imu_feedback, imu_xyz=self.lidar.imu_xyz
         )

@@ -285,12 +285,12 @@ def test_plugin_construction():
 
 
 def test_plugin_spec_roundtrip():
-    """Production ``Lite3Plugin()`` takes no kwargs and round-trips with an
-    empty spec; an override subclass captures its overrides in the spec."""
+    """Production ``Lite3Plugin()`` round-trips through its spec, which carries
+    the LiDAR it resolved; an override subclass captures its own kwargs."""
     plugin = Lite3Plugin()
     spec = plugin.to_spec()
     assert spec["class"].endswith(":Lite3Plugin")
-    assert spec["kwargs"] == {}
+    assert spec["kwargs"] == {"lidar_kind": plugin.LIDAR_KIND}
     rebuilt = RobotPlugin.from_spec(spec)
     assert set(rebuilt.feedbacks) == _EXPECTED_FEEDBACKS
     assert rebuilt.MOTION_HOST_IP == protocol.DEFAULT_ROBOT_IP
@@ -745,6 +745,69 @@ def test_detection_is_not_run_on_a_unit_with_no_lidar():
     plugin = NoLidar(command_port=_free_port(), telemetry_port=_free_port())
     assert plugin.LIDAR_KIND == "livox"
     assert time.monotonic() - started < NoLidar.LIDAR_DETECT_SECONDS
+
+
+class _AutoDetectUnit(Lite3Plugin):
+    """A shipped plugin as a recipe gets one: which LiDAR is fitted is worked
+    out on startup. Declared here rather than inside a test, so a spec can name
+    it the way the launcher does."""
+
+    LIDAR_KIND = "auto"
+
+
+def _never_probed(*_):
+    raise AssertionError("the robot was asked which LiDAR it carries")
+
+
+def test_the_detected_lidar_rides_in_the_spec(monkeypatch):
+    """Detection asks the robot's network, and every component subprocess
+    rebuilds this plugin from its spec. Without the answer in the spec each of
+    them would probe again, pay for it at startup, and could settle on a
+    different LiDAR than the launcher did."""
+    probes = []
+
+    def _streaming(port, _timeout):
+        probes.append(port)
+        return True
+
+    monkeypatch.setattr(_plugin_module, "_robosense_is_streaming", _streaming)
+
+    plugin = _AutoDetectUnit()
+    assert plugin.LIDAR_KIND == "robosense"
+    assert len(probes) == 1
+
+    spec = plugin.to_spec()
+    assert spec["kwargs"] == {"lidar_kind": "robosense"}
+
+    # What a component subprocess does with that spec
+    monkeypatch.setattr(_plugin_module, "_robosense_is_streaming", _never_probed)
+    rebuilt = RobotPlugin.from_spec(spec)
+    assert rebuilt.LIDAR_KIND == "robosense"
+    assert rebuilt.lidar.topic == plugin.lidar.topic
+    assert "lidar_imu" not in rebuilt.feedbacks
+
+
+def test_a_recipe_can_name_the_lidar_instead_of_detecting_it(monkeypatch):
+    """Pinning it without subclassing, for a unit that is known."""
+    monkeypatch.setattr(_plugin_module, "_robosense_is_streaming", _never_probed)
+
+    plugin = _AutoDetectUnit(lidar_kind="robosense")
+
+    assert plugin.LIDAR_KIND == "robosense"
+    assert plugin.lidar.topic == "/rslidar_points"
+    assert plugin.to_spec()["kwargs"] == {"lidar_kind": "robosense"}
+
+
+def test_a_subclass_with_its_own_constructor_keeps_its_spec(monkeypatch):
+    """The kind is recorded only where the constructor takes it: rebuilding
+    this one with a 'lidar_kind' it does not accept would raise."""
+    plugin = _Lite3PluginForTest(
+        command_port=_free_port(), telemetry_port=_free_port()
+    )
+
+    spec = plugin.to_spec()
+    assert "lidar_kind" not in spec["kwargs"]
+    assert RobotPlugin.from_spec(spec).LIDAR_KIND == "livox"
 
 
 class _RoboSenseLite3(_Lite3PluginForTest):
