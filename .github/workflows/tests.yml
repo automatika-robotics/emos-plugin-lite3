@@ -13,8 +13,8 @@ jobs:
     env:
       PIP_BREAK_SYSTEM_PACKAGES: "1"
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
-      # Sugarcoat release the plugin is tested against.
-      SUGARCOAT_REF: "0.8.1"
+      # Sugarcoat the plugin is tested against.
+      SUGARCOAT_REF: "feature/behavior_primitives"
     strategy:
       fail-fast: false
       matrix:
