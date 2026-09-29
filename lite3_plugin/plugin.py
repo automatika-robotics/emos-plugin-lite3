@@ -7,11 +7,12 @@ Sugarcoat plugin framework: it speaks the Lite3 Motion Host UDP protocol
 directly, so no separate bridge process is needed.
 
 * **Feedback** — binds UDP ``:43897`` for the robot's telemetry stream and
-  decodes ``RobotState`` packets into standard ``Odometry`` and ``Imu`` inputs,
-  a ``Float64`` battery level, two ``Range`` ultrasonic distances (front/back),
-  a ``String`` status token, and ``Bool`` balance / fallen flags; it also
-  decodes the ``JointState`` (12 leg-joint angles) and ``HandleState``
-  (operator joystick, as a ``Twist``) streams.
+  decodes ``RobotState`` packets into a standard ``Odometry`` input, a
+  ``Float64`` battery level, two ``Range`` ultrasonic distances (front/back),
+  a ``String`` status token, and ``Bool`` balance / fallen flags; the body
+  ``Imu`` is read from the robot's dedicated IMU stream, which runs at twice
+  the rate. The ``JointState`` (12 leg-joint angles) and ``HandleState``
+  (operator joystick, as a ``Twist``) streams are decoded too.
 * **Commands** — a standard ``Twist`` output is encoded to the Lite3's three
   ``ComplexCMD`` velocity packets and sent to UDP ``:43893``; an ``Audio``
   output is streamed as raw PCM to the Motion Host speaker.
@@ -40,6 +41,7 @@ import os
 import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Callable, FrozenSet, Optional, Tuple
 
@@ -95,7 +97,6 @@ from . import audio as audio_codec
 from . import codecs, protocol
 from .protocol import CommandCode
 
-
 #: Frame the leg odometry is expressed in, and the frame the body IMU's messages
 #: name. Shared by the decoders, the IMU mount and the EKF's parameters.
 _ODOM_FRAME = "odom"
@@ -133,27 +134,58 @@ def _decode_odometry(raw: bytes) -> Optional[RosOdometry]:
     return msg
 
 
-def _decode_imu(raw: bytes) -> Optional[RosImu]:
-    """Decode a Lite3 ``RobotState`` packet into ``sensor_msgs/Imu``."""
-    state = codecs.parse_robot_state(raw)
-    if state is None:
-        return None
+def _imu_message(rpy, rpy_vel, xyz_acc) -> RosImu:
+    """Build a ``sensor_msgs/Imu`` from the Lite3's IMU fields: angles in
+    degrees, angular velocities in rad/s, accelerations in m/s^2.
+
+    Shared by the two packets that carry them.
+    """
     msg = RosImu()
     msg.header.frame_id = _IMU_FRAME
-    qx, qy, qz, qw = codecs.quaternion_from_rpy_degrees(
-        state.rpy[0], state.rpy[1], state.rpy[2]
-    )
+    qx, qy, qz, qw = codecs.quaternion_from_rpy_degrees(rpy[0], rpy[1], rpy[2])
     msg.orientation.x = qx
     msg.orientation.y = qy
     msg.orientation.z = qz
     msg.orientation.w = qw
-    msg.angular_velocity.x = state.rpy_vel[0]
-    msg.angular_velocity.y = state.rpy_vel[1]
-    msg.angular_velocity.z = state.rpy_vel[2]
-    msg.linear_acceleration.x = state.xyz_acc[0]
-    msg.linear_acceleration.y = state.xyz_acc[1]
-    msg.linear_acceleration.z = state.xyz_acc[2]
+    msg.angular_velocity.x = rpy_vel[0]
+    msg.angular_velocity.y = rpy_vel[1]
+    msg.angular_velocity.z = rpy_vel[2]
+    msg.linear_acceleration.x = xyz_acc[0]
+    msg.linear_acceleration.y = xyz_acc[1]
+    msg.linear_acceleration.z = xyz_acc[2]
     return msg
+
+
+class _ImuDecoder:
+    """Decode the body IMU, preferring the Lite3's dedicated IMU stream.
+
+    The robot sends the same IMU fields twice: inside ``RobotState`` at 100 Hz,
+    and alone at 200 Hz, which is the rate the IMU is actually sampled at. The faster
+    streams samples are used while they keep coming, and the ``RobotState``
+    copy carries the feedback otherwise.
+    """
+
+    #: Silence from the dedicated stream before the copy takes over, in seconds
+    STALE_AFTER = 0.5
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._last_dedicated: Optional[float] = None
+
+    def __call__(self, raw: bytes) -> Optional[RosImu]:
+        imu = codecs.parse_imu(raw)
+        if imu is not None:
+            self._last_dedicated = self._clock()
+            return _imu_message(imu.rpy, imu.rpy_vel, imu.xyz_acc)
+        state = codecs.parse_robot_state(raw)
+        if state is None:
+            return None
+        if (
+            self._last_dedicated is not None
+            and self._clock() - self._last_dedicated < self.STALE_AFTER
+        ):
+            return None
+        return _imu_message(state.rpy, state.rpy_vel, state.xyz_acc)
 
 
 def _decode_battery(raw: bytes) -> Optional[RosFloat64]:
@@ -431,8 +463,7 @@ def _rgbd_type():
 
 @attrs.define(frozen=True, kw_only=True)
 class LidarSpec:
-    """Everything that differs between the LiDARs a Lite3 can be fitted with.
-    """
+    """Everything that differs between the LiDARs a Lite3 can be fitted with."""
 
     #: What to call it in a log line or a feedback description
     name: str
@@ -730,6 +761,7 @@ class Lite3Plugin(RobotPlugin):
             "audio": audio,
         }
 
+        # The rates below are the ones the robot was measured streaming at.
         self.feedbacks = {
             "Odometry": Feedback(
                 key="Odometry",
@@ -747,9 +779,9 @@ class Lite3Plugin(RobotPlugin):
                 key="Imu",
                 msg_type=Imu,
                 transport=telemetry,
-                decoder=_decode_imu,
-                rate_hz=100.0,
-                description="Body IMU decoded from the Lite3 RobotState stream",
+                decoder=_ImuDecoder(),
+                rate_hz=200.0,
+                description="Body IMU decoded from the Lite3 IMU stream",
             ),
             # Keyed "battery" (a role name) rather than the bare type name.
             "battery": Feedback(
@@ -766,7 +798,7 @@ class Lite3Plugin(RobotPlugin):
                 msg_type=Range,
                 transport=telemetry,
                 decoder=_decode_ultrasound_front,
-                rate_hz=50.0,
+                rate_hz=100.0,
                 description="Front obstacle distance from the Lite3 ultrasonic sensor",
             ),
             "ultrasound_back": Feedback(
@@ -774,7 +806,7 @@ class Lite3Plugin(RobotPlugin):
                 msg_type=Range,
                 transport=telemetry,
                 decoder=_decode_ultrasound_back,
-                rate_hz=50.0,
+                rate_hz=100.0,
                 description="Rear obstacle distance from the Lite3 ultrasonic sensor",
             ),
             # Human-readable status token (sitting / standing / walking_* /
@@ -784,7 +816,7 @@ class Lite3Plugin(RobotPlugin):
                 msg_type=String,
                 transport=telemetry,
                 decoder=_decode_status,
-                rate_hz=50.0,
+                rate_hz=100.0,
                 description=(
                     "Lite3 status token combining basic, gait and motion state "
                     "(e.g. sitting, standing, walking_flat_fast, long_jump)"
@@ -797,7 +829,7 @@ class Lite3Plugin(RobotPlugin):
                 msg_type=Bool,
                 transport=telemetry,
                 decoder=_decode_is_balanced,
-                rate_hz=50.0,
+                rate_hz=100.0,
                 description="True while the Lite3 can hold its balance",
             ),
             # Fallen flag: True in a lose-control-protection or flipping-over
@@ -807,7 +839,7 @@ class Lite3Plugin(RobotPlugin):
                 msg_type=Bool,
                 transport=telemetry,
                 decoder=_decode_is_fallen,
-                rate_hz=50.0,
+                rate_hz=100.0,
                 description="True when the Lite3 has lost its footing / flipped over",
             ),
             # The 12 leg-joint angles, from the Lite3 JointState stream (2306).
@@ -826,7 +858,7 @@ class Lite3Plugin(RobotPlugin):
                 msg_type=Twist,
                 transport=telemetry,
                 decoder=_decode_handle,
-                rate_hz=50.0,
+                rate_hz=100.0,
                 description="Operator joystick command (as a Twist) from the Lite3 HandleState stream",
             ),
         }

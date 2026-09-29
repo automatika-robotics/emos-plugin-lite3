@@ -43,7 +43,7 @@ from lite3_plugin import codecs, protocol  # noqa: E402
 from lite3_plugin.protocol import CommandCode  # noqa: E402
 from lite3_plugin import Lite3Plugin  # noqa: E402
 from lite3_plugin import plugin as _plugin_module  # noqa: E402
-from lite3_plugin.plugin import _rgbd_type  # noqa: E402
+from lite3_plugin.plugin import _ImuDecoder, _rgbd_type  # noqa: E402
 from server_node import MockLite3  # noqa: E402
 
 
@@ -105,10 +105,14 @@ def test_protocol_struct_sizes_are_distinct():
     sizes = {
         protocol.ROBOT_STATE_SIZE,
         protocol.ROBOT_STATE_WITH_POLICY_SIZE,
+        protocol.IMU_SIZE,
         protocol.JOINT_STATE_SIZE,
         protocol.HANDLE_STATE_SIZE,
     }
-    assert len(sizes) == 4
+    assert len(sizes) == 5
+    # The IMU frame as the robot sends it: the 12-byte header, then a
+    # timestamp and nine floats.
+    assert protocol.IMU_SIZE == 52
     # The newer RobotState layout is exactly one extra int (robot_policy_state).
     assert protocol.ROBOT_STATE_WITH_POLICY_SIZE == protocol.ROBOT_STATE_SIZE + 4
     # Command structs: 3x int32, and that + an 8-byte double.
@@ -192,6 +196,32 @@ def test_parse_robot_state_accepts_newer_layout():
     assert state.battery_level == 73.0
     # The extra field is exposed on the with-policy payload.
     assert state.robot_policy_state == 5
+
+
+def test_parse_imu_roundtrip():
+    """parse_imu decodes the dedicated IMU frame and rejects everything else."""
+    frame = protocol.ImuReceived()
+    frame.code = protocol.IMU_CODE
+    frame.data.timestamp = 3247931
+    frame.data.rpy[1] = 0.74
+    frame.data.rpy_vel[0] = -0.0029
+    frame.data.xyz_acc[2] = 9.81
+    raw = bytes(frame)
+    assert len(raw) == protocol.IMU_SIZE
+    imu = codecs.parse_imu(raw)
+    assert imu is not None
+    assert imu.timestamp == 3247931
+    # The fields are floats here, doubles in a RobotState frame.
+    assert imu.rpy[1] == pytest.approx(0.74)
+    assert imu.rpy_vel[0] == pytest.approx(-0.0029)
+    assert imu.xyz_acc[2] == pytest.approx(9.81)
+    # A robot-state frame is not an IMU frame, nor is the right size with the
+    # wrong code.
+    state = protocol.RobotStateReceived()
+    state.code = protocol.ROBOT_STATE_CODE
+    assert codecs.parse_imu(bytes(state)) is None
+    frame.code = protocol.ROBOT_STATE_CODE
+    assert codecs.parse_imu(bytes(frame)) is None
 
 
 def test_parse_joint_state_roundtrip():
@@ -1201,15 +1231,74 @@ def test_odometry_owns_odom_to_body_on_tf():
     assert not plugin.feedbacks["Imu"].publish_tf
 
 
+def test_both_imu_packets_decode_to_the_same_message():
+    """The Lite3 carries the IMU in two packets; both hold the same fields in
+    the same units, so the faster one is a drop-in for the slower."""
+    imu_frame = protocol.ImuReceived()
+    imu_frame.code = protocol.IMU_CODE
+    state_frame = protocol.RobotStateReceived()
+    state_frame.code = protocol.ROBOT_STATE_CODE
+    for frame in (imu_frame, state_frame):
+        frame.data.rpy[2] = 90.0
+        frame.data.rpy_vel[0] = 0.25
+        frame.data.xyz_acc[2] = 9.81
+
+    for msg in (_ImuDecoder()(bytes(imu_frame)), _ImuDecoder()(bytes(state_frame))):
+        assert msg is not None
+        assert msg.angular_velocity.x == pytest.approx(0.25)
+        assert msg.linear_acceleration.z == pytest.approx(9.81)
+        # Angles are in degrees in both packets.
+        assert (
+            msg.orientation.x,
+            msg.orientation.y,
+            msg.orientation.z,
+            msg.orientation.w,
+        ) == pytest.approx(codecs.quaternion_from_rpy_degrees(0.0, 0.0, 90.0))
+
+
+def test_only_one_imu_source_is_published_at_a_time():
+    """Publishing both packets would report every sample twice. The dedicated
+    stream wins while it is alive, and the RobotState copy covers a robot whose
+    firmware does not send it -- it is undocumented."""
+    now = [1000.0]
+    decoder = _ImuDecoder(clock=lambda: now[0])
+    imu_frame = protocol.ImuReceived()
+    imu_frame.code = protocol.IMU_CODE
+    state_frame = protocol.RobotStateReceived()
+    state_frame.code = protocol.ROBOT_STATE_CODE
+
+    # Nothing seen yet, so the copy carries the feedback.
+    assert decoder(bytes(state_frame)) is not None
+    # Once the dedicated stream arrives it takes over and the copy is dropped.
+    assert decoder(bytes(imu_frame)) is not None
+    assert decoder(bytes(state_frame)) is None
+    # If that stream goes quiet, the copy carries it again.
+    now[0] += _ImuDecoder.STALE_AFTER
+    assert decoder(bytes(state_frame)) is not None
+    # Anything else on the telemetry port is ignored by both paths.
+    assert decoder(codecs.encode_simple_cmd(1)) is None
+
+
+def test_the_imu_feedback_reads_the_dedicated_stream():
+    """The Imu feedback is wired to the fast decoder, and declares its rate."""
+    plugin = Lite3Plugin()
+    feedback = plugin.feedbacks["Imu"]
+    assert feedback.rate_hz == 200.0
+    frame = protocol.ImuReceived()
+    frame.code = protocol.IMU_CODE
+    frame.data.xyz_acc[2] = 9.81
+    msg = feedback.decoder(bytes(frame))
+    assert msg is not None
+    assert msg.linear_acceleration.z == pytest.approx(9.81)
+
+
 def test_body_imu_is_mounted_so_the_ekf_can_use_it():
     """robot_localization drops every IMU sample it cannot transform into the
     body frame, and the IMU's messages name their own frame."""
-    from lite3_plugin.plugin import _decode_imu
-
     plugin = Lite3Plugin()
     frame = protocol.RobotStateReceived()
     frame.code = protocol.ROBOT_STATE_CODE
-    imu_frame = _decode_imu(bytes(frame)).header.frame_id
+    imu_frame = plugin.feedbacks["Imu"].decoder(bytes(frame)).header.frame_id
 
     mounts = {m.child_frame: m for m in plugin.mounts}
     assert imu_frame in mounts

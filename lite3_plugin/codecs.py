@@ -16,14 +16,14 @@ from .protocol import CommandCode
 # Command encoding (host -> robot)
 # --------------------------------------------------------------------------
 def encode_simple_cmd(cmd_code: int, cmd_value: int = 0, type_: int = 0) -> bytes:
-    """Encode a :class:`~.protocol.SimpleCMD` packet."""
+    """Encode a `protocol.SimpleCMD` packet."""
     return bytes(protocol.SimpleCMD(cmd_code, cmd_value, type_))
 
 
 def encode_complex_cmd(
     cmd_code: int, cmd_value: int, type_: int, data: float
 ) -> bytes:
-    """Encode a :class:`~.protocol.ComplexCMD` packet."""
+    """Encode a `protocol.ComplexCMD` packet."""
     return bytes(protocol.ComplexCMD(cmd_code, cmd_value, type_, float(data)))
 
 
@@ -67,8 +67,23 @@ def parse_robot_state(raw: bytes) -> Optional[protocol.RobotState]:
     return frame.data
 
 
+def parse_imu(raw: bytes) -> Optional[protocol.ImuData]:
+    """Return the `protocol.ImuData` from a telemetry packet, or
+    ``None`` if ``raw`` is not a well-formed IMU frame.
+
+    This is the Lite3's dedicated IMU stream, which carries the same fields as
+    the IMU block of a robot-state frame at twice the rate.
+    """
+    if len(raw) != protocol.IMU_SIZE:
+        return None
+    frame = protocol.ImuReceived.from_buffer_copy(raw)
+    if frame.code != protocol.IMU_CODE:
+        return None
+    return frame.data
+
+
 def parse_joint_state(raw: bytes) -> Optional[protocol.JointState]:
-    """Return the :class:`~.protocol.JointState` from a telemetry packet, or
+    """Return the `protocol.JointState` from a telemetry packet, or
     ``None`` if ``raw`` is not a well-formed joint-state frame."""
     if len(raw) != protocol.JOINT_STATE_SIZE:
         return None
@@ -79,7 +94,7 @@ def parse_joint_state(raw: bytes) -> Optional[protocol.JointState]:
 
 
 def parse_handle_state(raw: bytes) -> Optional[protocol.HandleState]:
-    """Return the :class:`~.protocol.HandleState` from a telemetry packet, or
+    """Return the `protocol.HandleState` from a telemetry packet, or
     ``None`` if ``raw`` is not a well-formed handle-state frame."""
     if len(raw) != protocol.HANDLE_STATE_SIZE:
         return None

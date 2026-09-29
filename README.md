@@ -12,12 +12,12 @@ to the robot on its own.
 | Direction | Endpoint             | Wire format                                                                                 |
 | :-------- | :------------------- | :------------------------------------------------------------------------------------------ |
 | Commands  | UDP → robot `:43893` | `SimpleCMD` (3×int32) / `ComplexCMD` (3×int32 + double)                                     |
-| Telemetry | UDP ← bind `:43897`  | `RobotStateReceived` (code 2305), `JointStateReceived` (2306), `HandleStateReceived` (2309) |
+| Telemetry | UDP ← bind `:43897`  | `RobotStateReceived` (code 2305, 100 Hz), `ImuReceived` (0x00010901, 200 Hz), `JointStateReceived` (2306, 100 Hz), `HandleStateReceived` (2309, 100 Hz) |
 
 `protocol.py` defines the wire layout with `ctypes` (`_pack_ = 4`), so the
 on-the-wire bytes match the Lite3 Motion Host structs field-for-field and packet
 sizes can be used for type dispatch. `codecs.py` encodes commands and parses
-telemetry.
+telemetry. The rates above were measured on a robot.
 
 ## Installation
 
@@ -38,7 +38,6 @@ This builds the plugin and resolves the sensor drivers its manifest
   [Usage in Recipes](#usage-in-recipes) for binding a topic to it). From the
   `RobotState` packet:
   - leg odometry, standard `nav_msgs/Odometry` (key `Odometry`).
-  - body IMU, built-in `Imu` wrapping `sensor_msgs/Imu` (key `Imu`).
   - battery percentage, `std_msgs/Float64` (key `battery`).
   - front / back ultrasonic distance, built-in `Range` wrapping
     `sensor_msgs/Range` (keys `ultrasound_front`, `ultrasound_back`). Their
@@ -52,6 +51,9 @@ This builds the plugin and resolves the sensor drivers its manifest
     an external force has disturbed it, `std_msgs/Bool` (key `is_balanced`).
   - fallen flag — `True` in a lose-control-protection or flipping-over state,
     `std_msgs/Bool` (key `is_fallen`).
+
+  From the IMU packet, falling back to the `RobotState` copy:
+  - body IMU at 200 Hz, built-in `Imu` wrapping `sensor_msgs/Imu` (key `Imu`).
 
   From the `JointState` and `HandleState` packets:
   - the 12 leg-joint angles, built-in `JointState` wrapping `sensor_msgs/JointState` (key `JointState`).

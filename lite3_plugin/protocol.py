@@ -12,7 +12,8 @@ Two UDP endpoints:
 * **Commands** → robot ``:43893`` — ``SimpleCMD`` (12 bytes) / ``ComplexCMD``
   (20 bytes).
 * **Telemetry** ← bind ``:43897`` — ``RobotStateReceived`` (code 2305),
-  ``JointStateReceived`` (2306), ``HandleStateReceived`` (2309).
+  ``ImuReceived`` (0x00010901), ``JointStateReceived`` (2306),
+  ``HandleStateReceived`` (2309).
 """
 
 import ctypes
@@ -124,6 +125,34 @@ class RobotStateReceivedWithPolicy(ctypes.Structure):
     ]
 
 
+class ImuData(ctypes.Structure):
+    """Body IMU sample — the fields carries, in a frame of their own.
+
+    The Lite3 streams this next to ``RobotState``, at twice its rate, which is
+    the fastest the IMU is sampled.
+    """
+
+    _pack_ = 4
+    _fields_ = [
+        ("timestamp", ctypes.c_uint32),  # milliseconds since the Motion Host booted
+        ("rpy", ctypes.c_float * 3),      # IMU angle (degrees)
+        ("rpy_vel", ctypes.c_float * 3),  # IMU angular velocity (rad/s)
+        ("xyz_acc", ctypes.c_float * 3),  # IMU acceleration (m/s^2)
+    ]
+
+
+class ImuReceived(ctypes.Structure):
+    """Framed `ImuData` packet — ``code`` is ``0x00010901``."""
+
+    _pack_ = 4
+    _fields_ = [
+        ("code", ctypes.c_int),
+        ("size", ctypes.c_int),
+        ("cons_code", ctypes.c_int),
+        ("data", ImuData),
+    ]
+
+
 class JointState(ctypes.Structure):
     """The 12 leg-joint angles (LF/RF/LB/RB x 3)."""
 
@@ -186,12 +215,16 @@ class HandleStateReceived(ctypes.Structure):
 ROBOT_STATE_CODE = 2305
 JOINT_STATE_CODE = 2306
 HANDLE_STATE_CODE = 2309
+# The dedicated IMU frame: the robot-state code with a sub-index of 1 in the
+# upper half of the word.
+IMU_CODE = 0x00010901
 
 # Packet sizes, used for type dispatch exactly as the C++ bridge does.
 ROBOT_STATE_SIZE = ctypes.sizeof(RobotStateReceived)
 # Newer RobotState layout — 4 bytes larger; supported alongside the
 # default so both firmware revisions work (see codecs.parse_robot_state).
 ROBOT_STATE_WITH_POLICY_SIZE = ctypes.sizeof(RobotStateReceivedWithPolicy)
+IMU_SIZE = ctypes.sizeof(ImuReceived)
 JOINT_STATE_SIZE = ctypes.sizeof(JointStateReceived)
 HANDLE_STATE_SIZE = ctypes.sizeof(HandleStateReceived)
 
