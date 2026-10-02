@@ -645,6 +645,30 @@ def test_lidar_mount_places_the_cloud_on_the_body():
     assert (lidar.rpy[0], lidar.rpy[2]) == (0.0, 0.0)
 
 
+def test_camera_mount_places_the_realsense_on_the_body():
+    """The RealSense driver publishes its own tree under camera_link, so the
+    plugin joins it to the body. The numbers are DeepRobotics' own
+    base_link -> camera_link, from the voa launch on the Lite3 image."""
+    import math
+
+    plugin = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
+    mounts = {m.child_frame: m for m in plugin.mounts}
+    camera = mounts[plugin.CAMERA_FRAME]
+    assert camera.parent_frame == "body"
+    # 254.89 mm forward, 72.49 mm up, pitched 20 degrees nose-down
+    assert tuple(camera.xyz) == pytest.approx((0.25489, 0.0, 0.07249))
+    assert math.degrees(camera.rpy[1]) == pytest.approx(20.0, abs=1e-3)
+    assert (camera.rpy[0], camera.rpy[2]) == (0.0, 0.0)
+
+
+def test_no_camera_mount_without_a_camera():
+    class NoCamera(_Lite3PluginForTest):
+        HAS_CAMERA = False
+
+    plugin = NoCamera(command_port=_free_port(), telemetry_port=_free_port())
+    assert plugin.CAMERA_FRAME not in {m.child_frame for m in plugin.mounts}
+
+
 def test_no_lidar_mount_without_a_lidar():
     class NoLidar(_Lite3PluginForTest):
         HAS_LIDAR = False

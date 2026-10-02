@@ -665,6 +665,9 @@ class Lite3Plugin(RobotPlugin):
     CAMERA_NODE_NAME = "camera"
     #: Bind a specific device only when more than one RealSense is attached.
     CAMERA_SERIAL_NO: Optional[str] = None
+    #: Root of the Realsense TF tree
+    CAMERA_FRAME = "camera_link"
+    CAMERA_MOUNT = ((0.25489, 0.0, 0.07249), (0.0, 0.34907, 0.0))
     #: Topic overrides for the colour image, its CameraInfo, and the synchronised
     #: RGBD packet. ``None`` derives ``/<CAMERA_NODE_NAME>/<stream>``; set a string
     #: only for a non-standard namespace / remap.
@@ -717,6 +720,11 @@ class Lite3Plugin(RobotPlugin):
             xyz, rpy = self.lidar.mount
             self.mounts.append(
                 Mount(parent=self, child=self.lidar.frame, xyz=xyz, rpy=rpy)
+            )
+        if self.HAS_CAMERA:
+            xyz, rpy = self.CAMERA_MOUNT
+            self.mounts.append(
+                Mount(parent=self, child=self.CAMERA_FRAME, xyz=xyz, rpy=rpy)
             )
         xyz, rpy = self.IMU_MOUNT
         self.mounts.append(Mount(parent=self, child=_IMU_FRAME, xyz=xyz, rpy=rpy))
