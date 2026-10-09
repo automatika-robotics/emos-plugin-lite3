@@ -43,7 +43,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable, FrozenSet, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Optional, Tuple
 
 import attrs
 import numpy as np
@@ -482,6 +482,8 @@ class LidarSpec:
     imu_topic: Optional[str] = None
     #: That IMU's position in the LiDAR's frame, for LiDAR-inertial mapping
     imu_xyz: Optional[Tuple[float, float, float]] = None
+    #: Custom mapping settings this LiDAR needs
+    custom_settings: Dict[str, Dict[str, Any]] = attrs.field(factory=dict)
 
     @property
     def imu_feedback(self) -> Optional[str]:
@@ -640,6 +642,9 @@ class Lite3Plugin(RobotPlugin):
             host_ports=(6699, 7788),
             # No IMU of its own: no lidar_imu feedback, and nothing for mapping
             # to fuse.
+            # 16 beams leave few neighbours per point; GLIM's guide raises
+            # this from 10 for its 16-beam VLP16, so covariances stay sound.
+            custom_settings={"preprocess": {"k_correspondences": 20}},
         ),
     }
 
@@ -1494,7 +1499,11 @@ class Lite3Plugin(RobotPlugin):
             # as mounts on the body
             imu_xyz, imu_rpy = pose_relative_to(self.IMU_MOUNT, self.lidar.mount)
         self.MAPPING = attrs.evolve(
-            self.MAPPING, imu=imu, imu_xyz=imu_xyz, imu_rpy=imu_rpy
+            self.MAPPING,
+            imu=imu,
+            imu_xyz=imu_xyz,
+            imu_rpy=imu_rpy,
+            custom_settings=self.lidar.custom_settings,
         )
 
     def _detect_lidar_kind(self) -> str:
