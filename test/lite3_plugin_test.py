@@ -892,14 +892,13 @@ def test_robosense_unit_uses_its_own_driver_topic_and_geometry():
 
 def test_robosense_unit_serves_no_lidar_imu():
     """A RoboSense has no IMU, so that feedback is absent rather than silent.
-    Mapping then fuses the body IMU instead, which is what the vendor's own
-    faster-LIO does on these units."""
+    Mapping then uses the LiDAR alone, unless told to fuse the body IMU."""
     plugin = _RoboSenseLite3(command_port=_free_port(), telemetry_port=_free_port())
     assert "lidar" in plugin.feedbacks
     assert "lidar_imu" not in plugin.feedbacks
     assert plugin.lidar.feedbacks == frozenset({"lidar"})
     assert plugin.MAPPING.cloud == "lidar"
-    assert plugin.MAPPING.imu == "Imu"
+    assert plugin.MAPPING.imu is None
     # A unit that does have one fuses that. The class attribute carries
     # neither: which IMU to fuse is a property of the LiDAR that is fitted.
     mid360 = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
@@ -968,12 +967,30 @@ def test_native_mapping_names_sensors_this_plugin_serves():
     assert 0 < mapping.z_min < mapping.z_max <= plugin.robot_config.height
 
 
-def test_a_lidar_without_an_imu_maps_with_the_body_imu():
-    """A RoboSense carries no IMU, and mapping without one falls back to
-    LiDAR-only odometry, which a gait pitching the sensor makes hard. The robot
-    has an IMU of its own, and the vendor's faster-LIO maps these units with
-    exactly it."""
-    plugin = _RoboSenseLite3(command_port=_free_port(), telemetry_port=_free_port())
+def test_the_robosense_brings_the_custom_settings_a_16_beam_lidar_needs():
+    robosense = _RoboSenseLite3(command_port=_free_port(), telemetry_port=_free_port())
+    assert robosense.MAPPING.custom_settings == {"preprocess": {"k_correspondences": 20}}
+    livox = _Lite3PluginForTest(command_port=_free_port(), telemetry_port=_free_port())
+    assert livox.MAPPING.custom_settings == {}
+
+
+def test_a_robosense_unit_maps_from_the_lidar_alone():
+    """A RoboSense carries no IMU, and the body IMU reaches the backend with
+    gaps and late stamps, so these units map LiDAR-only unless told otherwise."""
+    mapping = _RoboSenseLite3(command_port=_free_port(), telemetry_port=_free_port()).MAPPING
+
+    assert mapping.imu is None
+    assert mapping.imu_xyz is None
+
+
+def test_a_robosense_unit_can_map_with_the_body_imu():
+    """The vendor's faster-LIO maps these units with the body IMU, and once it
+    arrives whole the backend can too."""
+
+    class WithBodyImu(_RoboSenseLite3):
+        MAP_WITH_BODY_IMU = True
+
+    plugin = WithBodyImu(command_port=_free_port(), telemetry_port=_free_port())
     mapping = plugin.MAPPING
 
     assert mapping.imu == "Imu"
@@ -988,6 +1005,12 @@ def test_a_lidar_without_an_imu_maps_with_the_body_imu():
     ), "the body IMU sits at the body origin, so this is the LiDAR mount inverted"
 
 
+def test_the_map_grid_is_sized_for_the_robot():
+    """10 cm cells: fine enough for a robot this size, and filled by a 16-beam LiDAR"""
+    plugin = _RoboSenseLite3(command_port=_free_port(), telemetry_port=_free_port())
+    assert plugin.MAPPING.resolution == pytest.approx(0.10)
+
+
 def test_the_mid360_keeps_its_own_imu():
     """A LiDAR with an IMU inside it has the one worth fusing: it shares the
     sensor's clock and rate, and the body IMU is neither."""
@@ -997,27 +1020,13 @@ def test_the_mid360_keeps_its_own_imu():
     assert plugin.MAPPING.imu_xyz == pytest.approx((0.011, 0.02329, -0.04412))
 
 
-def test_mapping_with_the_body_imu_can_be_turned_off():
-    """For a unit where it turns out not to help: the backend then maps from
-    the cloud alone."""
-
-    class LidarOnly(_RoboSenseLite3):
-        MAP_WITH_BODY_IMU = False
-
-    mapping = LidarOnly(
-        command_port=_free_port(), telemetry_port=_free_port()
-    ).MAPPING
-
-    assert mapping.imu is None
-    assert mapping.imu_xyz is None
-
-
 def test_the_body_imu_extrinsic_follows_a_rotated_mount():
     """The transform is composed rather than negated, so a LiDAR mounted at an
     angle -- as the Mid-360 is -- would still be placed correctly."""
     mount = ((0.1, 0.0, 0.2), (0.0, np.pi / 2, 0.0))
 
     class Tilted(_RoboSenseLite3):
+        MAP_WITH_BODY_IMU = True
         LIDARS = {
             **Lite3Plugin.LIDARS,
             "robosense": attrs.evolve(Lite3Plugin.LIDARS["robosense"], mount=mount),

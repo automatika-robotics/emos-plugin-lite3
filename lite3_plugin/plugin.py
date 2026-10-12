@@ -654,11 +654,15 @@ class Lite3Plugin(RobotPlugin):
     LIVOX_PUBLISH_FREQ = 10.0
 
     #: How this robot's environment gets mapped. Which IMU to fuse and where it
-    #: sits come from the fitted LiDAR, since only one of them has one.
-    MAPPING = NativeMapping(cloud="lidar", z_max=0.40)
+    #: sits come from the fitted LiDAR, since only one of them has one. 10 cm
+    #: cells are fine enough for a robot this size, and a 16-beam LiDAR fills
+    #: them where it leaves most 5 cm cells unseen.
+    MAPPING = NativeMapping(cloud="lidar", z_max=0.40, resolution=0.10)
     #: Map with the body IMU on a unit whose LiDAR carries none of its own.
-    #: Set False to map LiDAR-only.
-    MAP_WITH_BODY_IMU = True
+    #: Off: the body IMU reaches the backend with gaps and late stamps (its
+    #: telemetry is decoded in Python), and RoboSense units mapped cleaner from
+    #: the LiDAR alone. Set True to fuse it.
+    MAP_WITH_BODY_IMU = False
 
     # --- Intel RealSense camera (driver started by required_processes) -------
     #: Expose the RealSense streams, and start realsense2_camera for a recipe
