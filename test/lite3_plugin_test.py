@@ -576,6 +576,47 @@ def test_audio_command_streams_over_udp(mock_lite3):
         rx.close()
 
 
+def test_audio_is_sent_at_playback_pace(mock_lite3):
+    """The blocks of an utterance leave at the receiver's playback rate, not as
+    one burst, and all of them arrive."""
+    sf = pytest.importorskip("soundfile")
+    np = pytest.importorskip("numpy")
+
+    _robot, command_port, telemetry_port = mock_lite3
+    audio_port = _free_port()
+
+    rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    rx.bind(("127.0.0.1", audio_port))
+    rx.settimeout(2.0)
+
+    class _AudioLite3(_Lite3PluginForTest):
+        AUDIO_HOST = "127.0.0.1"
+        AUDIO_PORT = audio_port
+        AUDIO_SAMPLE_RATE = 16000
+
+    plugin = _AudioLite3(command_port=command_port, telemetry_port=telemetry_port)
+    host = RobotPluginHost(plugin, node=None, bus=InProcessFeedbackBus())
+    host.open()
+    try:
+        blocks = 8
+        buf = io.BytesIO()
+        sf.write(buf, np.zeros(blocks * plugin.AUDIO_BLOCK_SIZE, dtype="float32"),
+                 16000, format="WAV", subtype="FLOAT")
+        audio_cmd = plugin.commands["Audio"]
+        assert plugin.send_command(audio_cmd, audio_cmd.encoder(buf.getvalue()))
+        arrivals = []
+        for _ in range(blocks):
+            data, _ = rx.recvfrom(8192)
+            assert len(data) == plugin.AUDIO_BLOCK_SIZE * 4
+            arrivals.append(time.monotonic())
+        interval = plugin.AUDIO_PACE * plugin.AUDIO_BLOCK_SIZE / plugin.AUDIO_SAMPLE_RATE
+        assert arrivals[-1] - arrivals[0] >= 0.8 * (blocks - 1) * interval
+    finally:
+        host.close()
+        rx.close()
+
+
 def test_heartbeat_is_sent(mock_lite3):
     """The plugin sends the 4 Hz Lite3 heartbeat while active."""
     robot, command_port, telemetry_port = mock_lite3

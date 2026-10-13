@@ -541,6 +541,9 @@ class Lite3Plugin(RobotPlugin):
     AUDIO_SAMPLE_RATE = 24000
     #: Audio frames per UDP packet.
     AUDIO_BLOCK_SIZE = 1024
+    #: Time between packets as a share of their playback time. Below 1 the
+    #: receiver is always a little ahead and never runs dry.
+    AUDIO_PACE = 0.9
 
     # --- Robot model ---
     # The Lite3 is a quadruped that accepts a Twist, so for kompass planning
@@ -767,10 +770,11 @@ class Lite3Plugin(RobotPlugin):
         telemetry = UdpTransport(
             "telemetry", bind=(self.BIND_HOST, self.TELEMETRY_PORT)
         )
-        # Send-only audio endpoint to the Motion Host speaker.
-        audio = UdpTransport(
+        # Send-only audio endpoint to the Motion Host speaker, paced.
+        audio = audio_codec.PacedUdpTransport(
             "audio",
             send_to=(self.AUDIO_HOST or self.MOTION_HOST_IP, self.AUDIO_PORT),
+            interval=self.AUDIO_PACE * self.AUDIO_BLOCK_SIZE / self.AUDIO_SAMPLE_RATE,
         )
         self.transports = {
             "command": command,

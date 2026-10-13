@@ -343,8 +343,12 @@ normal user in the `audio` group (not `sudo`). There is no documented
 direct-PCM endpoint on the Lite3, so this receiver process must run on the
 host the speaker is attached to.
 
+The blocks are sent at playback pace, a little ahead of real time, rather than
+as one burst, which the Motion Host would partly drop on a long sentence.
+
 Audio class attributes, overridable by subclass: `AUDIO_HOST` (defaults to
-`MOTION_HOST_IP`), `AUDIO_PORT`, `AUDIO_SAMPLE_RATE`, `AUDIO_BLOCK_SIZE`.
+`MOTION_HOST_IP`), `AUDIO_PORT`, `AUDIO_SAMPLE_RATE`, `AUDIO_BLOCK_SIZE`,
+`AUDIO_PACE` (time between packets as a share of their playback time, 0.9).
 
 ## EMOS robot config
 
